@@ -1,0 +1,4 @@
+This is example content from nvim-assist
+Line 2
+Line 3
+This content was sent via socket
