@@ -59,7 +59,35 @@ Response:
 {"success": true, "message": "pong"}
 ```
 
-#### 2. Get Buffer Content
+#### 2. List Buffers
+
+Request:
+```json
+{"command": "list_buffers"}
+```
+
+Response:
+```json
+{
+  "success": true,
+  "data": [
+    {
+      "bufnr": 1,
+      "filepath": "/absolute/path/to/file.js",
+      "modified": false,
+      "is_current": true
+    },
+    {
+      "bufnr": 2,
+      "filepath": "/absolute/path/to/other.js",
+      "modified": true,
+      "is_current": false
+    }
+  ]
+}
+```
+
+#### 3. Get Buffer Content
 
 Request:
 ```json
@@ -79,7 +107,7 @@ Response:
 }
 ```
 
-#### 3. Apply Diff
+#### 4. Apply Diff
 
 Request:
 ```json
@@ -102,18 +130,70 @@ Response:
 {"success": true, "message": "Buffer replaced"}
 ```
 
+#### 5. Replace Text (Smart Matching with Conflict Detection)
+
+Request:
+```json
+{
+  "command": "replace_text",
+  "data": {
+    "old_string": "text to find",
+    "new_string": "replacement text",
+    "replace_all": false
+  }
+}
+```
+
+**Parameters**:
+- `old_string` (required): Text to find and replace
+- `new_string` (required): Replacement text (must be different)
+- `replace_all` (optional, default: false): Replace all occurrences
+
+**Matching Strategies** (tried in order):
+1. Exact match
+2. Line-trimmed match (ignores indentation differences)
+3. Block anchor match (uses first/last lines with similarity scoring)
+4. Multi-occurrence match
+
+**Success Response**:
+```json
+{"success": true, "message": "Text replaced"}
+```
+
+**Error Responses**:
+```json
+{"success": false, "error": "oldString not found in content"}
+{"success": false, "error": "Found multiple matches for oldString. Provide more surrounding lines in oldString to identify the correct match."}
+{"success": false, "error": "oldString and newString must be different"}
+```
+
+This command implements the same conflict resolution logic as the OpenCode difftool plugin, making it suitable for AI-assisted code editing with proper conflict detection.
+
 ## Testing
 
 The `scripts/` directory contains bash scripts for testing:
 
-### Ping Test
+### Quick Start
 
+Run the comprehensive test suite:
+```bash
+./scripts/test_replace.sh    # Interactive comprehensive test
+./scripts/quick_test.sh       # Non-interactive quick test
+```
+
+### Individual Commands
+
+Ping Test:
 ```bash
 ./scripts/ping.sh
 ```
 
-### Get Buffer Content
+List Open Buffers:
+```bash
+./scripts/list_buffers.sh
+```
 
+Get Buffer Content:
 ```bash
 ./scripts/get_buffer.sh
 ```
@@ -133,6 +213,33 @@ Full replace with text:
 Line range replace:
 ```bash
 ./scripts/apply_diff.sh line_range scripts/example_content.txt 5 10
+```
+
+### Replace Text (Smart Matching)
+
+Replace text with conflict detection:
+```bash
+./scripts/replace_text.sh "old text" "new text"
+```
+
+Replace all occurrences:
+```bash
+./scripts/replace_text.sh "old text" "new text" true
+```
+
+**Example Error Handling**:
+```bash
+# Not found
+$ ./scripts/replace_text.sh "nonexistent" "new"
+{"success": false, "error": "oldString not found in content"}
+
+# Multiple matches (ambiguous)
+$ ./scripts/replace_text.sh "function" "method"
+{"success": false, "error": "Found multiple matches for oldString. Provide more surrounding lines in oldString to identify the correct match."}
+
+# Success
+$ ./scripts/replace_text.sh "Hello" "Hi"
+{"success": true, "message": "Text replaced"}
 ```
 
 ### Environment Variables
@@ -235,6 +342,26 @@ To monitor logs in real-time:
 ```bash
 tail -f nvim-assist.log
 ```
+
+## OpenCode Integration
+
+The `replace_text` command implements the same conflict resolution logic as the [OpenCode difftool plugin](https://github.com/opencode-ai), enabling seamless integration with AI-assisted code editing tools.
+
+### Key Features
+
+- **Identical Error Messages**: Returns the same error messages as OpenCode difftool for consistent conflict resolution
+- **Same Matching Strategies**: Uses the same text matching algorithms (exact, line-trimmed, block anchor, etc.)
+- **Compatible API**: Accepts the same parameters (old_string, new_string, replace_all)
+
+### Integration Pattern
+
+1. External tool sends `replace_text` command to nvim-assist
+2. nvim-assist attempts replacement using smart matching
+3. On conflict, returns informative error message
+4. External tool handles conflict resolution (e.g., asking AI for more context)
+5. On success, changes are applied to the buffer
+
+This allows OpenCode plugins and similar tools to safely edit buffers with proper conflict detection and resolution.
 
 ## Requirements
 

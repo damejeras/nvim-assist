@@ -21,16 +21,30 @@ function M.setup(opts)
 		server.restart()
 	end, {})
 
-	-- Auto-start server on first buffer
-	vim.api.nvim_create_autocmd("BufEnter", {
-		group = vim.api.nvim_create_augroup("NvimAssistAutoStart", { clear = true }),
-		callback = function()
-			if not server.is_running() then
-				server.start()
-			end
-		end,
-		once = true,
-	})
+	-- Check if a buffer is already loaded and start server immediately
+	local buffers = vim.api.nvim_list_bufs()
+	local has_loaded_buffer = false
+	for _, buf in ipairs(buffers) do
+		if vim.api.nvim_buf_is_loaded(buf) then
+			has_loaded_buffer = true
+			break
+		end
+	end
+
+	if has_loaded_buffer then
+		server.start()
+	else
+		-- Auto-start server on first buffer
+		vim.api.nvim_create_autocmd("BufEnter", {
+			group = vim.api.nvim_create_augroup("NvimAssistAutoStart", { clear = true }),
+			callback = function()
+				if not server.is_running() then
+					server.start()
+				end
+			end,
+			once = true,
+		})
+	end
 
 	-- Auto-stop server on Vim exit
 	vim.api.nvim_create_autocmd("VimLeavePre", {

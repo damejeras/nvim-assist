@@ -1,4 +1,5 @@
 local M = {}
+local replace = require("nvim-assist.replace")
 
 -- Get the current buffer's content and metadata
 function M.get_current_content()
@@ -9,6 +10,70 @@ function M.get_current_content()
 		content = table.concat(lines, "\n"),
 		lines = lines,
 		filepath = vim.api.nvim_buf_get_name(bufnr),
+	}
+end
+
+-- List all open buffers with their metadata
+function M.list_buffers()
+	local buffers = {}
+	local bufs = vim.api.nvim_list_bufs()
+
+	for _, bufnr in ipairs(bufs) do
+		if vim.api.nvim_buf_is_loaded(bufnr) then
+			local filepath = vim.api.nvim_buf_get_name(bufnr)
+			local modified = vim.api.nvim_buf_get_option(bufnr, "modified")
+			local buftype = vim.api.nvim_buf_get_option(bufnr, "buftype")
+			local listed = vim.api.nvim_buf_get_option(bufnr, "buflisted")
+
+			-- Only include normal file buffers (not help, quickfix, etc.)
+			if buftype == "" and listed then
+				table.insert(buffers, {
+					bufnr = bufnr,
+					filepath = filepath,
+					modified = modified,
+					is_current = bufnr == vim.api.nvim_get_current_buf(),
+				})
+			end
+		end
+	end
+
+	return buffers
+end
+
+-- Replace text in buffer using smart matching strategies
+function M.replace_text(replace_data)
+	local bufnr = replace_data.bufnr or vim.api.nvim_get_current_buf()
+	local old_string = replace_data.old_string
+	local new_string = replace_data.new_string
+	local replace_all = replace_data.replace_all or false
+
+	-- Validate inputs
+	if not old_string or not new_string then
+		return { success = false, error = "old_string and new_string are required" }
+	end
+
+	if old_string == new_string then
+		return { success = false, error = "oldString and newString must be different" }
+	end
+
+	-- Get current buffer content
+	local lines = vim.api.nvim_buf_get_lines(bufnr, 0, -1, false)
+	local content = table.concat(lines, "\n")
+
+	-- Attempt replacement
+	local new_content, err = replace.replace(content, old_string, new_string, replace_all)
+
+	if err then
+		return { success = false, error = err }
+	end
+
+	-- Apply the changes to the buffer
+	local new_lines = vim.split(new_content, "\n", { plain = true })
+	vim.api.nvim_buf_set_lines(bufnr, 0, -1, false, new_lines)
+
+	return {
+		success = true,
+		message = replace_all and "All occurrences replaced" or "Text replaced",
 	}
 end
 

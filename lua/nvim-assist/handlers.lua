@@ -16,8 +16,17 @@ function M.handle_message(msg)
 			success = true,
 			data = buffer_data,
 		})
+	elseif command == "list_buffers" then
+		local buffers = buffer.list_buffers()
+		return vim.json.encode({
+			success = true,
+			data = buffers,
+		})
 	elseif command == "apply_diff" then
 		local result = buffer.apply_diff(decoded.data or {})
+		return vim.json.encode(result)
+	elseif command == "replace_text" then
+		local result = buffer.replace_text(decoded.data or {})
 		return vim.json.encode(result)
 	elseif command == "ping" then
 		return vim.json.encode({ success = true, message = "pong" })
