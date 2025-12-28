@@ -6,11 +6,11 @@ local log = require("nvim-assist.log")
 
 -- Default configuration
 M.config = {
-	agent_name = "build",
-	provider_id = "openrouter",
-	model_id = "moonshotai/kimi-k2",
-	-- Set to false to disable automatic text object mappings
-	enable_text_objects = true,
+	opencode = {
+		agent = "build",
+		provider = "openrouter",
+		model = "moonshotai/kimi-k2",
+	},
 }
 
 -- Setup function
@@ -26,8 +26,6 @@ function M.setup(opts)
 		callback = function()
 			if not server.is_running() then
 				server.start()
-				-- Set environment variable for child processes
-				vim.fn.setenv("NVIM_ASSIST_SOCKET", server.get_socket_path())
 			end
 		end,
 		once = true,
@@ -42,11 +40,6 @@ function M.setup(opts)
 		end,
 	})
 
-	-- Create :Assist command
-	vim.api.nvim_create_user_command("Assist", function()
-		assist.assist()
-	end, {})
-
 	-- Create :AssistLog command to tail log file
 	vim.api.nvim_create_user_command("AssistLog", function()
 		log.tail_log()
@@ -54,25 +47,23 @@ function M.setup(opts)
 
 	-- Register treesitter text object mappings with 'm' prefix
 	-- These work like vim-textobj and nvim-treesitter-textobjects
-	if M.config.enable_text_objects then
-		local text_objects = {
-			{ key = "mif", query = "@function.inner", desc = "Modify inner function" },
-			{ key = "maf", query = "@function.outer", desc = "Modify around function" },
-			{ key = "mic", query = "@class.inner", desc = "Modify inner class" },
-			{ key = "mac", query = "@class.outer", desc = "Modify around class" },
-			{ key = "mib", query = "@block.inner", desc = "Modify inner block" },
-			{ key = "mab", query = "@block.outer", desc = "Modify around block" },
-			{ key = "mio", query = "@conditional.inner", desc = "Modify inner conditional" },
-			{ key = "mao", query = "@conditional.outer", desc = "Modify around conditional" },
-			{ key = "mil", query = "@loop.inner", desc = "Modify inner loop" },
-			{ key = "mal", query = "@loop.outer", desc = "Modify around loop" },
-		}
+	local text_objects = {
+		{ key = "mif", query = "@function.inner", desc = "Modify inner function" },
+		{ key = "maf", query = "@function.outer", desc = "Modify around function" },
+		{ key = "mic", query = "@class.inner", desc = "Modify inner class" },
+		{ key = "mac", query = "@class.outer", desc = "Modify around class" },
+		{ key = "mib", query = "@block.inner", desc = "Modify inner block" },
+		{ key = "mab", query = "@block.outer", desc = "Modify around block" },
+		{ key = "mio", query = "@conditional.inner", desc = "Modify inner conditional" },
+		{ key = "mao", query = "@conditional.outer", desc = "Modify around conditional" },
+		{ key = "mil", query = "@loop.inner", desc = "Modify inner loop" },
+		{ key = "mal", query = "@loop.outer", desc = "Modify around loop" },
+	}
 
-		for _, obj in ipairs(text_objects) do
-			vim.keymap.set("n", obj.key, function()
-				assist.modify_textobj(obj.query)
-			end, { desc = obj.desc, silent = true })
-		end
+	for _, obj in ipairs(text_objects) do
+		vim.keymap.set("n", obj.key, function()
+			assist.modify_textobj(obj.query)
+		end, { desc = obj.desc, silent = true })
 	end
 end
 

@@ -20,7 +20,6 @@ local base_dir = temp_dir .. "/nvim-assist"
 local socket_path = base_dir .. "/" .. session_id .. ".sock"
 local log_path = base_dir .. "/" .. session_id .. ".log"
 
-
 local function handle_message(msg)
 	local ok, decoded = pcall(vim.json.decode, msg)
 	if not ok then
@@ -154,10 +153,14 @@ function M.start()
 		client:read_start(create_client_handler(client))
 	end)
 
-	log.info("Server started")
-	log.info("Session ID: " .. session_id)
-	log.info("Socket: " .. socket_path)
-	log.info("Log: " .. log_path)
+	log.info(
+		string.format(
+			"Server started, session_id: %s, socket_path: %s, log_path: %s",
+			session_id,
+			socket_path,
+			log_path
+		)
+	)
 
 	return true
 end
@@ -202,10 +205,6 @@ end
 
 function M.get_socket_path()
 	return socket_path
-end
-
-function M.get_log_path()
-	return log_path
 end
 
 return M
