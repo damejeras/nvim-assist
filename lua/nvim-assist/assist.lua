@@ -4,7 +4,40 @@ local opencode = require("nvim-assist.opencode")
 local treesitter_util = require("nvim-assist.treesitter")
 local server = require("nvim-assist.server")
 local log = require("nvim-assist.log")
-local fidget = require("fidget")
+
+-- Namespace for virtual text
+local ns_id = vim.api.nvim_create_namespace("nvim-assist")
+
+-- Spinner frames for loading animation
+local spinner_frames = { "⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏" }
+
+-- Helper to create a tracked extmark with virtual text
+-- Returns the extmark ID which can be used to update or clear it later
+local function create_tracked_virtual_text(bufnr, line, text)
+	return vim.api.nvim_buf_set_extmark(bufnr, ns_id, line, 0, {
+		virt_text = { { " " .. spinner_frames[1] .. " " .. text, "Comment" } },
+		virt_text_pos = "eol",
+	})
+end
+
+-- Helper to update virtual text using extmark ID
+local function update_virtual_text(bufnr, extmark_id, text, spinner_index)
+	local pos = vim.api.nvim_buf_get_extmark_by_id(bufnr, ns_id, extmark_id, {})
+	if pos and #pos > 0 then
+		local spinner = spinner_index and spinner_frames[spinner_index] or ""
+		local prefix = spinner_index and (spinner .. " ") or ""
+		vim.api.nvim_buf_set_extmark(bufnr, ns_id, pos[1], pos[2], {
+			id = extmark_id,
+			virt_text = { { " " .. prefix .. text, "Comment" } },
+			virt_text_pos = "eol",
+		})
+	end
+end
+
+-- Helper to clear virtual text using extmark ID
+local function clear_virtual_text(bufnr, extmark_id)
+	pcall(vim.api.nvim_buf_del_extmark, bufnr, ns_id, extmark_id)
+end
 
 -- Get config from init module
 local function get_config()
@@ -99,6 +132,10 @@ function M.assist()
 	local filepath = vim.api.nvim_buf_get_name(bufnr)
 	local original_lines_count = end_line - start_line + 1
 
+	-- Capture the function content immediately to protect against buffer changes
+	local function_lines = vim.api.nvim_buf_get_lines(bufnr, start_line, end_line + 1, false)
+	local function_content = table.concat(function_lines, "\n")
+
 	log.debug(
 		string.format(
 			"Found function at lines %d-%d in buffer %d (%s), original lines: %d",
@@ -109,6 +146,7 @@ function M.assist()
 			original_lines_count
 		)
 	)
+	log.debug(string.format("Captured function content: %s", function_content:sub(1, 100)))
 
 	-- Ensure OpenCode server is running
 	opencode.start(function(port)
@@ -134,33 +172,48 @@ function M.assist()
 
 		log.info(string.format("OpenCode session created: %s (agent: %s)", session.id, config.agent_name))
 
-		-- Create fidget progress handle
-		local progress = fidget.progress.handle.create({
-			title = "OpenCode",
-			message = "Starting implementation...",
-			lsp_client = { name = "nvim-assist" },
-		})
+		-- Create tracked virtual text (extmark will follow the line even if content is added/removed above)
+		local extmark_id = create_tracked_virtual_text(bufnr, start_line, "AI: Starting implementation...")
+
+		-- Animate the spinner
+		local spinner_index = 1
+		local current_text = "AI: Starting implementation..."
+		local timer = vim.loop.new_timer()
+		timer:start(
+			100,
+			100,
+			vim.schedule_wrap(function()
+				spinner_index = (spinner_index % #spinner_frames) + 1
+				update_virtual_text(bufnr, extmark_id, current_text, spinner_index)
+			end)
+		)
 
 		-- Get nvim-assist socket path
 		local socket_path = server.get_socket_path()
 
 		-- Send prompt to OpenCode with instructions
 		local prompt_text = string.format(
-			[[Implement the function in buffer %d at lines %d-%d (file: %s).
+			[[Implement the following function in buffer %d (file: %s).
+
+IMPORTANT: The function to implement is:
+```
+%s
+```
 
 Use the editor tools with socket path: %s
 
 Steps:
 1. Use editor_list_buffers with socketPath to verify the buffer exists
-2. Use editor_get_buffer with socketPath and bufnr to read the current function
-3. Implement the function body based on the function signature and any comments
-4. Use editor_replace_text with socketPath and bufnr to replace the function
+2. Use editor_get_buffer with socketPath and bufnr to read the entire buffer
+3. Find the EXACT function shown above in the buffer (it may have moved from its original position)
+4. Implement the function body based on the function signature and any comments
+5. Use editor_replace_text with socketPath and bufnr to replace ONLY that specific function
 
+CRITICAL: Search for the exact function content shown above, do NOT rely on line numbers as the buffer may have changed.
 Be sure to preserve the exact indentation and function signature.]],
 			bufnr,
-			start_line + 1, -- Convert to 1-indexed for display
-			end_line + 1,
 			filepath,
+			function_content,
 			socket_path
 		)
 
@@ -189,10 +242,13 @@ Be sure to preserve the exact indentation and function signature.]],
 
 		if response then
 			log.info("Prompt sent successfully")
-			progress:report({ message = "Analyzing function..." })
+			current_text = "AI: Analyzing function..."
+			update_virtual_text(bufnr, extmark_id, current_text, spinner_index)
 		else
 			log.error("Failed to send prompt to OpenCode")
-			progress:finish()
+			timer:stop()
+			timer:close()
+			clear_virtual_text(bufnr, extmark_id)
 			return
 		end
 
@@ -216,23 +272,27 @@ Be sure to preserve the exact indentation and function signature.]],
 						goto continue
 					end
 
-					-- Update progress based on events
+					-- Update virtual text based on events
 					vim.schedule(function()
 						if event.payload.type == "message.part.updated" and event.payload.properties then
 							local part = event.payload.properties.part
 							if part and part.sessionID == session.id then
-								-- Update progress message based on part type
+								-- Update virtual text based on part type
 								if part.type == "tool" and part.tool then
-									progress:report({ message = string.format("Running: %s", part.tool) })
+									current_text = string.format("AI: Running %s", part.tool)
+									update_virtual_text(bufnr, extmark_id, current_text, spinner_index)
 								elseif part.type == "text" then
-									progress:report({ message = "Thinking..." })
+									current_text = "AI: Thinking..."
+									update_virtual_text(bufnr, extmark_id, current_text, spinner_index)
 								end
 							end
 						elseif event.payload.type == "session.idle" and event.payload.properties then
 							-- Session completed
 							local sessionID = event.payload.properties.sessionID
 							if sessionID == session.id then
-								progress:finish()
+								timer:stop()
+								timer:close()
+								clear_virtual_text(bufnr, extmark_id)
 								log.info("Session completed")
 							end
 						end
@@ -253,9 +313,9 @@ Be sure to preserve the exact indentation and function signature.]],
 			on_exit = function(_, exit_code, _)
 				log.debug(string.format("OpenCode event stream closed (exit code: %d)", exit_code))
 				vim.schedule(function()
-					if progress then
-						progress:finish()
-					end
+					timer:stop()
+					timer:close()
+					clear_virtual_text(bufnr, extmark_id)
 				end)
 			end,
 		})

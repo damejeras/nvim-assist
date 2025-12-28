@@ -6,7 +6,7 @@ local log = require("nvim-assist.log")
 
 -- Default configuration
 M.config = {
-	agent_name = "assistant",
+	agent_name = "build",
 	provider_id = "openrouter",
 	model_id = "moonshotai/kimi-k2",
 }
