@@ -11,16 +11,17 @@ local ns_id = vim.api.nvim_create_namespace("nvim-assist")
 -- Spinner frames for loading animation
 local spinner_frames = { "⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏" }
 
--- Helper to create a tracked extmark with virtual text
+-- Helper to create a tracked extmark with virtual line
 -- Returns the extmark ID which can be used to update or clear it later
 local function create_tracked_virtual_text(bufnr, line, text)
 	return vim.api.nvim_buf_set_extmark(bufnr, ns_id, line, 0, {
-		virt_text = { { " " .. spinner_frames[1] .. " " .. text, "Comment" } },
-		virt_text_pos = "eol",
+		virt_lines = { { { spinner_frames[1] .. " " .. text, "Comment" } } },
+		virt_lines_above = true,
+		invalidate = true, -- Clear extmark when the line is deleted/modified
 	})
 end
 
--- Helper to update virtual text using extmark ID
+-- Helper to update virtual line using extmark ID
 local function update_virtual_text(bufnr, extmark_id, text, spinner_index)
 	local pos = vim.api.nvim_buf_get_extmark_by_id(bufnr, ns_id, extmark_id, {})
 	if pos and #pos > 0 then
@@ -28,8 +29,9 @@ local function update_virtual_text(bufnr, extmark_id, text, spinner_index)
 		local prefix = spinner_index and (spinner .. " ") or ""
 		vim.api.nvim_buf_set_extmark(bufnr, ns_id, pos[1], pos[2], {
 			id = extmark_id,
-			virt_text = { { " " .. prefix .. text, "Comment" } },
-			virt_text_pos = "eol",
+			virt_lines = { { { prefix .. text, "Comment" } } },
+			virt_lines_above = true,
+			invalidate = true,
 		})
 	end
 end
@@ -43,6 +45,70 @@ end
 local function get_config()
 	local init = require("nvim-assist.init")
 	return init.config
+end
+
+-- Helper to highlight a region
+local function highlight_region(bufnr, start_line, end_line)
+	local extmarks = {}
+	for line = start_line, end_line do
+		-- Get the line length to properly set end_col
+		local line_text = vim.api.nvim_buf_get_lines(bufnr, line, line + 1, false)[1] or ""
+		local line_length = #line_text
+
+		local mark_id = vim.api.nvim_buf_set_extmark(bufnr, ns_id, line, 0, {
+			end_line = line,
+			end_col = line_length,
+			hl_group = "Visual",
+			hl_eol = true,
+		})
+		table.insert(extmarks, mark_id)
+	end
+	return extmarks
+end
+
+-- Helper to clear region highlights
+local function clear_region_highlights(bufnr, extmarks)
+	for _, mark_id in ipairs(extmarks) do
+		pcall(vim.api.nvim_buf_del_extmark, bufnr, ns_id, mark_id)
+	end
+end
+
+-- Handle text object modification
+-- query_string: treesitter query like "@function.inner" or "@function.outer"
+function M.modify_textobj(query_string)
+	local bufnr = vim.api.nvim_get_current_buf()
+
+	-- Get the treesitter range for the text object
+	local node = treesitter_util.get_node_at_cursor(query_string)
+	if not node then
+		vim.notify("No " .. query_string .. " found at cursor", vim.log.levels.WARN)
+		return
+	end
+
+	local start_row, _, end_row, _ = node:range()
+
+	-- Highlight the region
+	local highlight_marks = highlight_region(bufnr, start_row, end_row)
+
+	-- Force redraw to show highlights before input prompt
+	vim.cmd("redraw")
+
+	-- Prompt user for what to do
+	vim.ui.input({
+		prompt = "AI Task: ",
+		default = "",
+	}, function(input)
+		-- Clear highlights
+		clear_region_highlights(bufnr, highlight_marks)
+
+		if not input or input == "" then
+			log.debug("User cancelled text object modification")
+			return
+		end
+
+		-- Call assist with the selection and custom prompt
+		M.assist(start_row, end_row, input)
+	end)
 end
 
 -- URL encode helper
@@ -109,44 +175,42 @@ local function request(port, method, path, body, allow_empty)
 	return decoded
 end
 
--- Main assist function
-function M.assist()
+-- Main assist function with custom prompt and selection
+-- If no parameters provided, uses cursor position to find function
+function M.assist(start_line, end_line, custom_prompt)
 	log.info("Assist command invoked")
 
-	-- Save buffer if modified
-	if vim.bo.modified then
-		vim.cmd("write")
-		log.debug("Buffer saved")
-	end
-
-	-- Find function using treesitter
-	local func_info, err = treesitter_util.find_function_at_cursor()
-	if not func_info then
-		log.error("Failed to find function: " .. (err or "unknown error"))
-		return vim.notify("Failed to find function: " .. (err or "unknown error"), vim.log.levels.ERROR)
-	end
-
 	local bufnr = vim.api.nvim_get_current_buf()
-	local start_line = func_info.start_line -- 0-indexed
-	local end_line = func_info.end_line -- 0-indexed
 	local filepath = vim.api.nvim_buf_get_name(bufnr)
-	local original_lines_count = end_line - start_line + 1
 
-	-- Capture the function content immediately to protect against buffer changes
-	local function_lines = vim.api.nvim_buf_get_lines(bufnr, start_line, end_line + 1, false)
-	local function_content = table.concat(function_lines, "\n")
+	-- If no selection provided, find function at cursor
+	if not start_line or not end_line then
+		local func_info, err = treesitter_util.find_function_at_cursor()
+		if not func_info then
+			log.error("Failed to find function: " .. (err or "unknown error"))
+			return vim.notify("Failed to find function: " .. (err or "unknown error"), vim.log.levels.ERROR)
+		end
+		start_line = func_info.start_line -- 0-indexed
+		end_line = func_info.end_line -- 0-indexed
+	end
+
+	-- Capture the content immediately to protect against buffer changes
+	local content_lines = vim.api.nvim_buf_get_lines(bufnr, start_line, end_line + 1, false)
+	local content = table.concat(content_lines, "\n")
 
 	log.debug(
 		string.format(
-			"Found function at lines %d-%d in buffer %d (%s), original lines: %d",
+			"Working with lines %d-%d in buffer %d (%s)",
 			start_line + 1,
 			end_line + 1,
 			bufnr,
-			filepath,
-			original_lines_count
+			filepath
 		)
 	)
-	log.debug(string.format("Captured function content: %s", function_content:sub(1, 100)))
+	log.debug(string.format("Captured content: %s", content:sub(1, 100)))
+
+	-- Determine the prompt
+	local user_prompt = custom_prompt or "Implement this function"
 
 	-- Ensure OpenCode server is running
 	opencode.start(function(port)
@@ -172,7 +236,8 @@ function M.assist()
 
 		log.info(string.format("OpenCode session created: %s (agent: %s)", session.id, config.agent_name))
 
-		-- Create tracked virtual text (extmark will follow the line even if content is added/removed above)
+		-- Create tracked virtual line above the selection
+		-- virt_lines_above will automatically place it above the start_line
 		local extmark_id = create_tracked_virtual_text(bufnr, start_line, "AI: Starting implementation...")
 
 		-- Animate the spinner
@@ -191,30 +256,46 @@ function M.assist()
 		-- Get nvim-assist socket path
 		local socket_path = server.get_socket_path()
 
+		-- Get the full buffer content to provide context
+		local full_buffer = vim.api.nvim_buf_get_lines(bufnr, 0, -1, false)
+		local full_buffer_content = table.concat(full_buffer, "\n")
+
 		-- Send prompt to OpenCode with instructions
 		local prompt_text = string.format(
-			[[Implement the following function in buffer %d (file: %s).
+			[[Task: %s
 
-IMPORTANT: The function to implement is:
+File: %s
+Buffer ID: %d
+Editor Socket Path: %s
+
+Current buffer content:
 ```
 %s
 ```
 
-Use the editor tools with socket path: %s
+The specific code section to modify:
+```
+%s
+```
 
-Steps:
-1. Use editor_list_buffers with socketPath to verify the buffer exists
-2. Use editor_get_buffer with socketPath and bufnr to read the entire buffer
-3. Find the EXACT function shown above in the buffer (it may have moved from its original position)
-4. Implement the function body based on the function signature and any comments
-5. Use editor_replace_text with socketPath and bufnr to replace ONLY that specific function
+Instructions:
+1. Find the EXACT code section shown above in the buffer (it may have moved from its original position)
+2. Make the changes as requested in the task
+3. Use editor_replace_text with socketPath=%s and bufnr=%d to replace ONLY that specific code section
 
-CRITICAL: Search for the exact function content shown above, do NOT rely on line numbers as the buffer may have changed.
-Be sure to preserve the exact indentation and function signature.]],
-			bufnr,
+CRITICAL:
+- Search for the exact code content shown in "The specific code section to modify"
+- Do NOT rely on line numbers as the buffer may have changed
+- Preserve indentation and formatting unless the task specifically requires changing it
+- If you need to refresh the buffer content, use editor_get_buffer with the socketPath and bufnr]],
+			user_prompt,
 			filepath,
-			function_content,
-			socket_path
+			bufnr,
+			socket_path,
+			full_buffer_content,
+			content,
+			socket_path,
+			bufnr
 		)
 
 		log.info("Sending prompt to OpenCode session " .. session.id)
