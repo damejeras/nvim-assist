@@ -304,7 +304,8 @@ function M.replace(content, old_string, new_string, replace_all)
 		return nil, "oldString not found in content"
 	end
 
-	return nil, "Found multiple matches for oldString. Provide more surrounding lines in oldString to identify the correct match."
+	return nil,
+		"Found multiple matches for oldString. Provide more surrounding lines in oldString to identify the correct match."
 end
 
 return M

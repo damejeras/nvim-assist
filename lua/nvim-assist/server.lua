@@ -4,22 +4,29 @@ local uv = vim.loop
 local server = nil
 local clients = {}
 local log_file = nil
-
-local config = {
-	host = "127.0.0.1",
-	port = 9999,
-	log_file = "nvim-assist.log",
-}
-
 local message_handler = nil
+
+-- Generate a unique session hash
+local function generate_session_hash()
+	local random = math.random(0, 0xFFFFFF)
+	local timestamp = os.time()
+	return string.format("%06x%08x", random, timestamp):sub(1, 12)
+end
+
+-- Session ID and paths
+local session_id = generate_session_hash()
+local temp_dir = os.getenv("TMPDIR") or "/tmp"
+local base_dir = temp_dir .. "/nvim-assist"
+local socket_path = base_dir .. "/" .. session_id .. ".sock"
+local log_path = base_dir .. "/" .. session_id .. ".log"
 
 local function log(msg)
 	local timestamp = os.date("%Y-%m-%d %H:%M:%S")
 	local log_msg = string.format("[%s] %s\n", timestamp, msg)
 
 	if not log_file then
-		local cwd = vim.fn.getcwd()
-		local log_path = cwd .. "/" .. config.log_file
+		-- Ensure base directory exists
+		vim.fn.mkdir(base_dir, "p")
 		log_file = io.open(log_path, "a")
 	end
 
@@ -74,18 +81,27 @@ function M.start()
 		return false
 	end
 
-	server = uv.new_tcp()
+	-- Ensure base directory exists
+	vim.fn.mkdir(base_dir, "p")
+
+	-- Remove existing socket file if it exists
+	local stat = uv.fs_stat(socket_path)
+	if stat then
+		uv.fs_unlink(socket_path)
+	end
+
+	server = uv.new_pipe(false)
 	if not server then
-		log("Failed to create TCP server")
+		log("Failed to create Unix socket server")
 		return false
 	end
 
 	local bind_success, bind_err = pcall(function()
-		server:bind(config.host, config.port)
+		server:bind(socket_path)
 	end)
 
 	if not bind_success then
-		log("Failed to bind to " .. config.host .. ":" .. config.port .. " - " .. tostring(bind_err))
+		log("Failed to bind to " .. socket_path .. " - " .. tostring(bind_err))
 		server = nil
 		return false
 	end
@@ -96,7 +112,7 @@ function M.start()
 			return
 		end
 
-		local client = uv.new_tcp()
+		local client = uv.new_pipe(false)
 		if not client then
 			log("Failed to create client socket")
 			return
@@ -110,7 +126,11 @@ function M.start()
 		client:read_start(create_client_handler(client))
 	end)
 
-	log("Server started on " .. config.host .. ":" .. config.port)
+	log("Server started")
+	log("Session ID: " .. session_id)
+	log("Socket: " .. socket_path)
+	log("Log: " .. log_path)
+
 	return true
 end
 
@@ -128,11 +148,23 @@ function M.stop()
 	server:close()
 	server = nil
 
-	log("Server stopped")
+	log("Server stopped - cleaning up session files")
 
+	-- Close and delete log file
 	if log_file then
 		log_file:close()
 		log_file = nil
+	end
+
+	local log_stat = uv.fs_stat(log_path)
+	if log_stat then
+		uv.fs_unlink(log_path)
+	end
+
+	-- Clean up socket file
+	local socket_stat = uv.fs_stat(socket_path)
+	if socket_stat then
+		uv.fs_unlink(socket_path)
 	end
 
 	return true
@@ -148,14 +180,24 @@ function M.is_running()
 	return server ~= nil
 end
 
-function M.configure(opts)
-	config.host = opts.host or config.host
-	config.port = opts.port or config.port
-	config.log_file = opts.log_file or config.log_file
-end
-
 function M.set_message_handler(handler)
 	message_handler = handler
+end
+
+function M.get_socket_path()
+	return socket_path
+end
+
+function M.get_session_id()
+	return session_id
+end
+
+function M.get_log_path()
+	return log_path
+end
+
+function M.log(msg)
+	log(msg)
 end
 
 return M

@@ -1,14 +1,23 @@
 local M = {}
 local replace = require("nvim-assist.replace")
 
--- Get the current buffer's content and metadata
-function M.get_current_content()
-	local bufnr = vim.api.nvim_get_current_buf()
+-- Get a specific buffer's content and metadata
+function M.get_buffer_content(bufnr)
+	bufnr = bufnr or vim.api.nvim_get_current_buf()
+
+	-- Validate buffer exists and is loaded
+	if not vim.api.nvim_buf_is_valid(bufnr) then
+		return nil, "Buffer " .. bufnr .. " is not valid"
+	end
+
+	if not vim.api.nvim_buf_is_loaded(bufnr) then
+		return nil, "Buffer " .. bufnr .. " is not loaded"
+	end
+
 	local lines = vim.api.nvim_buf_get_lines(bufnr, 0, -1, false)
 	return {
 		bufnr = bufnr,
 		content = table.concat(lines, "\n"),
-		lines = lines,
 		filepath = vim.api.nvim_buf_get_name(bufnr),
 	}
 end
@@ -21,7 +30,6 @@ function M.list_buffers()
 	for _, bufnr in ipairs(bufs) do
 		if vim.api.nvim_buf_is_loaded(bufnr) then
 			local filepath = vim.api.nvim_buf_get_name(bufnr)
-			local modified = vim.api.nvim_buf_get_option(bufnr, "modified")
 			local buftype = vim.api.nvim_buf_get_option(bufnr, "buftype")
 			local listed = vim.api.nvim_buf_get_option(bufnr, "buflisted")
 
@@ -30,8 +38,6 @@ function M.list_buffers()
 				table.insert(buffers, {
 					bufnr = bufnr,
 					filepath = filepath,
-					modified = modified,
-					is_current = bufnr == vim.api.nvim_get_current_buf(),
 				})
 			end
 		end
@@ -56,9 +62,26 @@ function M.replace_text(replace_data)
 		return { success = false, error = "oldString and newString must be different" }
 	end
 
-	-- Get current buffer content
+	-- Validate buffer exists and is loaded
+	if not vim.api.nvim_buf_is_valid(bufnr) then
+		return { success = false, error = "Buffer " .. bufnr .. " is not valid" }
+	end
+
+	if not vim.api.nvim_buf_is_loaded(bufnr) then
+		return { success = false, error = "Buffer " .. bufnr .. " is not loaded" }
+	end
+
+	-- Get buffer content
 	local lines = vim.api.nvim_buf_get_lines(bufnr, 0, -1, false)
 	local content = table.concat(lines, "\n")
+
+	-- Store cursor positions for all windows showing this buffer
+	local cursor_positions = {}
+	for _, win in ipairs(vim.api.nvim_list_wins()) do
+		if vim.api.nvim_win_get_buf(win) == bufnr then
+			cursor_positions[win] = vim.api.nvim_win_get_cursor(win)
+		end
+	end
 
 	-- Attempt replacement
 	local new_content, err = replace.replace(content, old_string, new_string, replace_all)
@@ -67,37 +90,52 @@ function M.replace_text(replace_data)
 		return { success = false, error = err }
 	end
 
-	-- Apply the changes to the buffer
+	-- Split into lines
+	local old_lines = lines
 	local new_lines = vim.split(new_content, "\n", { plain = true })
+
+	-- Find the first line where change occurs
+	local first_changed_line = nil
+	for i = 1, math.min(#old_lines, #new_lines) do
+		if old_lines[i] ~= new_lines[i] then
+			first_changed_line = i
+			break
+		end
+	end
+
+	-- If no difference found in common lines, change must be at the end
+	if not first_changed_line then
+		if #old_lines ~= #new_lines then
+			first_changed_line = math.min(#old_lines, #new_lines) + 1
+		end
+	end
+
+	-- Calculate line difference
+	local line_diff = #new_lines - #old_lines
+
+	-- Apply the changes to the buffer
 	vim.api.nvim_buf_set_lines(bufnr, 0, -1, false, new_lines)
+
+	-- Adjust cursor positions for all windows showing this buffer
+	if first_changed_line and line_diff ~= 0 then
+		for win, pos in pairs(cursor_positions) do
+			if vim.api.nvim_win_is_valid(win) then
+				local row, col = pos[1], pos[2]
+				-- If cursor is on or after the first changed line, adjust it
+				if row >= first_changed_line then
+					local new_row = row + line_diff
+					-- Ensure the new row is valid (at least 1, at most the number of lines)
+					new_row = math.max(1, math.min(new_row, #new_lines))
+					vim.api.nvim_win_set_cursor(win, { new_row, col })
+				end
+			end
+		end
+	end
 
 	return {
 		success = true,
 		message = replace_all and "All occurrences replaced" or "Text replaced",
 	}
-end
-
--- Apply a diff to the buffer
-function M.apply_diff(diff_data)
-	local bufnr = diff_data.bufnr or vim.api.nvim_get_current_buf()
-
-	if diff_data.type == "full_replace" then
-		local lines = vim.split(diff_data.content, "\n", { plain = true })
-		vim.api.nvim_buf_set_lines(bufnr, 0, -1, false, lines)
-		return { success = true, message = "Buffer replaced" }
-	elseif diff_data.type == "line_range" then
-		local start_line = diff_data.start_line or 0
-		local end_line = diff_data.end_line or -1
-		local lines = vim.split(diff_data.content, "\n", { plain = true })
-		vim.api.nvim_buf_set_lines(bufnr, start_line, end_line, false, lines)
-		return { success = true, message = "Lines updated" }
-	elseif diff_data.type == "unified_diff" then
-		local lines = vim.split(diff_data.content, "\n", { plain = true })
-		vim.api.nvim_buf_set_lines(bufnr, 0, -1, false, lines)
-		return { success = true, message = "Diff applied" }
-	else
-		return { success = false, error = "Unknown diff type: " .. (diff_data.type or "nil") }
-	end
 end
 
 return M

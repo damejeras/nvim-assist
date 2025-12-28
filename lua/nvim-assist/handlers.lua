@@ -11,7 +11,16 @@ function M.handle_message(msg)
 	local command = decoded.command
 
 	if command == "get_buffer" then
-		local buffer_data = buffer.get_current_content()
+		local bufnr = decoded.data and decoded.data.bufnr
+		local buffer_data, err = buffer.get_buffer_content(bufnr)
+
+		if err then
+			return vim.json.encode({
+				success = false,
+				error = err,
+			})
+		end
+
 		return vim.json.encode({
 			success = true,
 			data = buffer_data,
@@ -22,14 +31,9 @@ function M.handle_message(msg)
 			success = true,
 			data = buffers,
 		})
-	elseif command == "apply_diff" then
-		local result = buffer.apply_diff(decoded.data or {})
-		return vim.json.encode(result)
 	elseif command == "replace_text" then
 		local result = buffer.replace_text(decoded.data or {})
 		return vim.json.encode(result)
-	elseif command == "ping" then
-		return vim.json.encode({ success = true, message = "pong" })
 	else
 		return vim.json.encode({
 			success = false,
