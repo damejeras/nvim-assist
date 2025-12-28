@@ -1,10 +1,10 @@
 local M = {}
 
+local buffer = require("nvim-assist.buffer")
+local log = require("nvim-assist.log")
 local uv = vim.loop
 local server = nil
 local clients = {}
-local log_file = nil
-local message_handler = nil
 
 -- Generate a unique session hash
 local function generate_session_hash()
@@ -20,54 +20,79 @@ local base_dir = temp_dir .. "/nvim-assist"
 local socket_path = base_dir .. "/" .. session_id .. ".sock"
 local log_path = base_dir .. "/" .. session_id .. ".log"
 
-local function log(msg)
-	local timestamp = os.date("%Y-%m-%d %H:%M:%S")
-	local log_msg = string.format("[%s] %s\n", timestamp, msg)
 
-	if not log_file then
-		-- Ensure base directory exists
-		vim.fn.mkdir(base_dir, "p")
-		log_file = io.open(log_path, "a")
+local function handle_message(msg)
+	local ok, decoded = pcall(vim.json.decode, msg)
+	if not ok then
+		return vim.json.encode({ success = false, error = "Invalid JSON" })
 	end
 
-	if log_file then
-		log_file:write(log_msg)
-		log_file:flush()
+	local command = decoded.command
+
+	if command == "get_buffer" then
+		local bufnr = decoded.data and decoded.data.bufnr
+		local buffer_data, err = buffer.get_buffer_content(bufnr)
+
+		if err then
+			return vim.json.encode({
+				success = false,
+				error = err,
+			})
+		end
+
+		return vim.json.encode({
+			success = true,
+			data = buffer_data,
+		})
+	elseif command == "list_buffers" then
+		local buffers = buffer.list_buffers()
+		return vim.json.encode({
+			success = true,
+			data = buffers,
+		})
+	elseif command == "replace_text" then
+		local result = buffer.replace_text(decoded.data or {})
+		return vim.json.encode(result)
+	else
+		return vim.json.encode({
+			success = false,
+			error = "Unknown command: " .. (command or "nil"),
+		})
 	end
 end
 
 local function create_client_handler(client)
-	local buffer = ""
+	local content = ""
 
 	return function(err, chunk)
 		if err then
-			log("Read error: " .. err)
+			log.error("Read error: " .. err)
 			client:close()
 			clients[client] = nil
 			return
 		end
 
 		if not chunk then
-			log("Client disconnected")
+			log.info("Client disconnected")
 			client:close()
 			clients[client] = nil
 			return
 		end
 
-		buffer = buffer .. chunk
+		content = content .. chunk
 
 		while true do
-			local newline_pos = buffer:find("\n")
+			local newline_pos = content:find("\n")
 			if not newline_pos then
 				break
 			end
 
-			local message = buffer:sub(1, newline_pos - 1)
-			buffer = buffer:sub(newline_pos + 1)
+			local message = content:sub(1, newline_pos - 1)
+			content = content:sub(newline_pos + 1)
 
-			if #message > 0 and message_handler then
+			if #message > 0 then
 				vim.schedule(function()
-					local response = message_handler(message)
+					local response = handle_message(message)
 					client:write(response .. "\n")
 				end)
 			end
@@ -77,9 +102,12 @@ end
 
 function M.start()
 	if server then
-		log("Server already running")
+		log.warn("Server already running")
 		return false
 	end
+
+	-- Initialize logging
+	log.init(log_path)
 
 	-- Ensure base directory exists
 	vim.fn.mkdir(base_dir, "p")
@@ -92,7 +120,7 @@ function M.start()
 
 	server = uv.new_pipe(false)
 	if not server then
-		log("Failed to create Unix socket server")
+		log.error("Failed to create Unix socket server")
 		return false
 	end
 
@@ -101,42 +129,42 @@ function M.start()
 	end)
 
 	if not bind_success then
-		log("Failed to bind to " .. socket_path .. " - " .. tostring(bind_err))
+		log.error("Failed to bind to " .. socket_path .. " - " .. tostring(bind_err))
 		server = nil
 		return false
 	end
 
 	server:listen(128, function(err)
 		if err then
-			log("Listen error: " .. err)
+			log.error("Listen error: " .. err)
 			return
 		end
 
 		local client = uv.new_pipe(false)
 		if not client then
-			log("Failed to create client socket")
+			log.error("Failed to create client socket")
 			return
 		end
 
 		server:accept(client)
 		clients[client] = true
 
-		log("Client connected")
+		log.info("Client connected")
 
 		client:read_start(create_client_handler(client))
 	end)
 
-	log("Server started")
-	log("Session ID: " .. session_id)
-	log("Socket: " .. socket_path)
-	log("Log: " .. log_path)
+	log.info("Server started")
+	log.info("Session ID: " .. session_id)
+	log.info("Socket: " .. socket_path)
+	log.info("Log: " .. log_path)
 
 	return true
 end
 
 function M.stop()
 	if not server then
-		log("Server not running")
+		log.warn("Server not running")
 		return false
 	end
 
@@ -148,14 +176,12 @@ function M.stop()
 	server:close()
 	server = nil
 
-	log("Server stopped - cleaning up session files")
+	log.info("Server stopped - cleaning up session files")
 
-	-- Close and delete log file
-	if log_file then
-		log_file:close()
-		log_file = nil
-	end
+	-- Close log file
+	log.close()
 
+	-- Delete log file
 	local log_stat = uv.fs_stat(log_path)
 	if log_stat then
 		uv.fs_unlink(log_path)
@@ -170,34 +196,16 @@ function M.stop()
 	return true
 end
 
-function M.restart()
-	log("Restarting server...")
-	M.stop()
-	vim.defer_fn(M.start, 100)
-end
-
 function M.is_running()
 	return server ~= nil
-end
-
-function M.set_message_handler(handler)
-	message_handler = handler
 end
 
 function M.get_socket_path()
 	return socket_path
 end
 
-function M.get_session_id()
-	return session_id
-end
-
 function M.get_log_path()
 	return log_path
-end
-
-function M.log(msg)
-	log(msg)
 end
 
 return M

@@ -3,7 +3,14 @@ local M = {}
 local opencode = require("nvim-assist.opencode")
 local treesitter_util = require("nvim-assist.treesitter")
 local server = require("nvim-assist.server")
+local log = require("nvim-assist.log")
 local fidget = require("fidget")
+
+-- Get config from init module
+local function get_config()
+	local init = require("nvim-assist.init")
+	return init.config
+end
 
 -- URL encode helper
 local function url_encode(str)
@@ -20,17 +27,17 @@ local function request(port, method, path, body, allow_empty)
 	if body then
 		local json = vim.fn.json_encode(next(body) == nil and vim.empty_dict() or body)
 		cmd = cmd .. string.format(" -H 'Content-Type: application/json' -d '%s'", json:gsub("'", "'\\''"))
-		server.log(string.format("Request body: %s", json:sub(1, 500)))
+		log.debug(string.format("Request body: %s", json:sub(1, 500)))
 	end
 
-	server.log(string.format("Executing: curl -X %s http://localhost:%d%s", method, port, path))
+	log.debug(string.format("Executing: curl -X %s http://localhost:%d%s", method, port, path))
 
 	local result = vim.fn.system(cmd)
 	local exit_code = vim.v.shell_error
 
 	if exit_code ~= 0 then
-		server.log(string.format("ERROR: curl failed with exit code %d", exit_code))
-		server.log(string.format("Response: %s", result:sub(1, 500)))
+		log.error(string.format("curl failed with exit code %d", exit_code))
+		log.error(string.format("Response: %s", result:sub(1, 500)))
 		return nil
 	end
 
@@ -39,50 +46,50 @@ local function request(port, method, path, body, allow_empty)
 	local http_code = tonumber(lines[#lines])
 	local response_body = table.concat(vim.list_slice(lines, 1, #lines - 1), "\n")
 
-	server.log(string.format("HTTP Status: %d", http_code or 0))
+	log.debug(string.format("HTTP Status: %d", http_code or 0))
 
 	-- Check HTTP status code
 	if not http_code or http_code < 200 or http_code >= 300 then
-		server.log(string.format("ERROR: HTTP error %d", http_code or 0))
-		server.log(string.format("Response: %s", response_body:sub(1, 500)))
+		log.error(string.format("HTTP error %d", http_code or 0))
+		log.error(string.format("Response: %s", response_body:sub(1, 500)))
 		return nil
 	end
 
 	-- Empty response is OK for async endpoints or if explicitly allowed
 	if response_body == "" or response_body:match("^%s*$") then
 		if allow_empty then
-			server.log("Empty response (OK for async endpoint)")
+			log.debug("Empty response (OK for async endpoint)")
 			return true -- Return a truthy value to indicate success
 		else
-			server.log("ERROR: Empty response from OpenCode server")
+			log.error("Empty response from OpenCode server")
 			return nil
 		end
 	end
 
 	local ok, decoded = pcall(vim.fn.json_decode, response_body)
 	if not ok then
-		server.log(string.format("ERROR: Failed to parse JSON response: %s", response_body:sub(1, 500)))
+		log.error(string.format("Failed to parse JSON response: %s", response_body:sub(1, 500)))
 		return nil
 	end
 
-	server.log(string.format("Response: %s", vim.fn.json_encode(decoded):sub(1, 500)))
+	log.debug(string.format("Response: %s", vim.fn.json_encode(decoded):sub(1, 500)))
 	return decoded
 end
 
 -- Main assist function
 function M.assist()
-	server.log("Assist command invoked")
+	log.info("Assist command invoked")
 
 	-- Save buffer if modified
 	if vim.bo.modified then
 		vim.cmd("write")
-		server.log("Buffer saved")
+		log.debug("Buffer saved")
 	end
 
 	-- Find function using treesitter
 	local func_info, err = treesitter_util.find_function_at_cursor()
 	if not func_info then
-		server.log("ERROR: Failed to find function: " .. (err or "unknown error"))
+		log.error("Failed to find function: " .. (err or "unknown error"))
 		return vim.notify("Failed to find function: " .. (err or "unknown error"), vim.log.levels.ERROR)
 	end
 
@@ -92,7 +99,7 @@ function M.assist()
 	local filepath = vim.api.nvim_buf_get_name(bufnr)
 	local original_lines_count = end_line - start_line + 1
 
-	server.log(
+	log.debug(
 		string.format(
 			"Found function at lines %d-%d in buffer %d (%s), original lines: %d",
 			start_line + 1,
@@ -106,25 +113,26 @@ function M.assist()
 	-- Ensure OpenCode server is running
 	opencode.start(function(port)
 		if not port then
-			server.log("ERROR: Failed to get OpenCode server port")
+			log.error("Failed to get OpenCode server port")
 			return vim.notify("Failed to get OpenCode server port", vim.log.levels.ERROR)
 		end
 
-		server.log("OpenCode server running on port " .. port)
+		log.info("OpenCode server running on port " .. port)
 
 		local cwd = vim.fn.getcwd()
+		local config = get_config()
 
-		-- Create OpenCode session with assistant agent
-		server.log("Creating OpenCode session with assistant agent")
+		-- Create OpenCode session with configured agent
+		log.info("Creating OpenCode session with agent: " .. config.agent_name)
 		local session = request(port, "POST", "/session?directory=" .. url_encode(cwd), {
-			agentName = "assistant",
+			agentName = config.agent_name,
 		})
 		if not session or not session.id then
-			server.log("ERROR: Failed to create OpenCode session")
+			log.error("Failed to create OpenCode session")
 			return vim.notify("Failed to create OpenCode session", vim.log.levels.ERROR)
 		end
 
-		server.log(string.format("OpenCode session created: %s (agent: assistant)", session.id))
+		log.info(string.format("OpenCode session created: %s (agent: %s)", session.id, config.agent_name))
 
 		-- Create fidget progress handle
 		local progress = fidget.progress.handle.create({
@@ -156,9 +164,9 @@ Be sure to preserve the exact indentation and function signature.]],
 			socket_path
 		)
 
-		server.log("Sending prompt to OpenCode session " .. session.id)
-		server.log("Model: openrouter/moonshotai/kimi-k2")
-		server.log("Prompt: " .. prompt_text:gsub("\n", " "):sub(1, 200) .. "...")
+		log.info("Sending prompt to OpenCode session " .. session.id)
+		log.debug(string.format("Model: %s/%s", config.provider_id, config.model_id))
+		log.debug("Prompt: " .. prompt_text:gsub("\n", " "):sub(1, 200) .. "...")
 
 		local response = request(
 			port,
@@ -172,24 +180,24 @@ Be sure to preserve the exact indentation and function signature.]],
 					},
 				},
 				model = {
-					providerID = "openrouter",
-					modelID = "moonshotai/kimi-k2",
+					providerID = config.provider_id,
+					modelID = config.model_id,
 				},
 			},
 			true -- Allow empty response for async endpoint
 		)
 
 		if response then
-			server.log("Prompt sent successfully")
+			log.info("Prompt sent successfully")
 			progress:report({ message = "Analyzing function..." })
 		else
-			server.log("ERROR: Failed to send prompt to OpenCode")
+			log.error("Failed to send prompt to OpenCode")
 			progress:finish()
 			return
 		end
 
 		-- Subscribe to OpenCode events to log session activity
-		server.log("Subscribing to OpenCode events for session " .. session.id)
+		log.debug("Subscribing to OpenCode events for session " .. session.id)
 		vim.fn.jobstart(string.format("curl -s -N http://localhost:%d/global/event", port), {
 			on_stdout = function(_, data)
 				if not data then
@@ -225,8 +233,7 @@ Be sure to preserve the exact indentation and function signature.]],
 							local sessionID = event.payload.properties.sessionID
 							if sessionID == session.id then
 								progress:finish()
-								server.log("Session completed")
-								vim.notify("Function implementation completed", vim.log.levels.INFO)
+								log.info("Session completed")
 							end
 						end
 					end)
@@ -238,13 +245,13 @@ Be sure to preserve the exact indentation and function signature.]],
 				if data then
 					for _, line in ipairs(data) do
 						if line ~= "" then
-							server.log(string.format("curl stderr: %s", line))
+							log.warn(string.format("curl stderr: %s", line))
 						end
 					end
 				end
 			end,
 			on_exit = function(_, exit_code, _)
-				server.log(string.format("OpenCode event stream closed (exit code: %d)", exit_code))
+				log.debug(string.format("OpenCode event stream closed (exit code: %d)", exit_code))
 				vim.schedule(function()
 					if progress then
 						progress:finish()

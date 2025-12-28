@@ -3,16 +3,16 @@ local M = {}
 local uv = vim.loop
 local server_handle = nil
 local server_port = nil
-local server = require("nvim-assist.server")
+local log = require("nvim-assist.log")
 
 -- Find an available port by starting server without -p flag
 local function start_opencode_server(callback)
 	if server_handle then
-		server.log("OpenCode server already running on port " .. server_port)
+		log.info("OpenCode server already running on port " .. server_port)
 		return callback(server_port)
 	end
 
-	server.log("Starting OpenCode server")
+	log.info("Starting OpenCode server")
 
 	-- Start opencode serve without port to get random available port
 	local stdout = uv.new_pipe(false)
@@ -28,19 +28,19 @@ local function start_opencode_server(callback)
 			server_handle = nil
 			server_port = nil
 			if code ~= 0 and code ~= 15 then -- 15 is SIGTERM (normal shutdown)
-				server.log(string.format("OpenCode server exited with code %d, signal %d", code, signal))
+				log.warn(string.format("OpenCode server exited with code %d, signal %d", code, signal))
 				vim.notify(
 					string.format("OpenCode server exited with code %d, signal %d", code, signal),
 					vim.log.levels.WARN
 				)
 			else
-				server.log("OpenCode server stopped")
+				log.info("OpenCode server stopped")
 			end
 		end)
 	)
 
 	if not server_handle then
-		server.log("ERROR: Failed to start OpenCode server")
+		log.error("Failed to start OpenCode server")
 		return vim.notify("Failed to start OpenCode server", vim.log.levels.ERROR)
 	end
 
@@ -48,7 +48,7 @@ local function start_opencode_server(callback)
 	local output = ""
 	stderr:read_start(function(err, data)
 		if err then
-			server.log("ERROR: Error reading OpenCode server output: " .. err)
+			log.error("Error reading OpenCode server output: " .. err)
 			vim.notify("Error reading OpenCode server output: " .. err, vim.log.levels.ERROR)
 			return
 		end
@@ -59,7 +59,7 @@ local function start_opencode_server(callback)
 			local port = output:match("http://[^:]+:(%d+)")
 			if port and not server_port then
 				server_port = tonumber(port)
-				server.log(string.format("OpenCode server started on port %d", server_port))
+				log.info(string.format("OpenCode server started on port %d", server_port))
 				vim.schedule(function()
 					callback(server_port)
 				end)
@@ -77,7 +77,7 @@ local function start_opencode_server(callback)
 			local port = output:match("http://[^:]+:(%d+)")
 			if port and not server_port then
 				server_port = tonumber(port)
-				server.log(string.format("OpenCode server started on port %d", server_port))
+				log.info(string.format("OpenCode server started on port %d", server_port))
 				vim.schedule(function()
 					callback(server_port)
 				end)
@@ -92,7 +92,7 @@ end
 
 function M.stop()
 	if server_handle then
-		server.log("Stopping OpenCode server (port " .. (server_port or "unknown") .. ")")
+		log.info("Stopping OpenCode server (port " .. (server_port or "unknown") .. ")")
 		server_handle:kill(15) -- SIGTERM
 		server_handle = nil
 		server_port = nil
