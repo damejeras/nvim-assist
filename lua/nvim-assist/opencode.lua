@@ -5,60 +5,89 @@ local server_handle = nil
 local server_port = nil
 local log = require("nvim-assist.log")
 
--- URL encode helper
-local function url_encode(str)
-	return string.gsub(str, "([^%w%-%.%_%~%/])", function(c)
-		return string.format("%%%02X", string.byte(c))
-	end)
+-- Lazy load plenary curl
+local curl = nil
+local function get_curl()
+	if not curl then
+		local ok, plenary_curl = pcall(require, "plenary.curl")
+		if not ok then
+			error("plenary.nvim is required but not installed. Please install nvim-lua/plenary.nvim")
+		end
+		curl = plenary_curl
+	end
+	return curl
 end
 
 -- Make HTTP request to OpenCode server
 local function request(port, method, path, body, allow_empty)
-	-- Add -w flag to get HTTP status code
-	local cmd = string.format("curl -s -w '\\n%%{http_code}' -X %s 'http://localhost:%d%s'", method, port, path)
+	local url = string.format("http://localhost:%d%s", port, path)
+	log.debug(string.format("HTTP %s: %s", method, url))
 
 	if body then
-		local json = vim.fn.json_encode(next(body) == nil and vim.empty_dict() or body)
-		cmd = cmd .. string.format(" -H 'Content-Type: application/json' -d '%s'", json:gsub("'", "'\\''"))
+		local json = vim.fn.json_encode(body)
 		log.debug(string.format("Request body: %s", json:sub(1, 500)))
 	end
 
-	log.debug(string.format("Executing: curl -X %s http://localhost:%d%s", method, port, path))
+	-- Prepare request options
+	local opts = {
+		headers = {
+			["content-type"] = "application/json",
+		},
+	}
 
-	local result = vim.fn.system(cmd)
-	local exit_code = vim.v.shell_error
+	if body then
+		opts.body = vim.fn.json_encode(body)
+	end
 
-	if exit_code ~= 0 then
-		log.error(string.format("curl failed with exit code %d", exit_code))
-		log.error(string.format("Response: %s", result:sub(1, 500)))
+	-- Make the request using the appropriate method
+	local curl_lib = get_curl()
+	local response
+	if method == "GET" then
+		response = curl_lib.get(url, opts)
+	elseif method == "POST" then
+		response = curl_lib.post(url, opts)
+	elseif method == "PUT" then
+		response = curl_lib.put(url, opts)
+	elseif method == "DELETE" then
+		response = curl_lib.delete(url, opts)
+	else
+		log.error(string.format("Unsupported HTTP method: %s", method))
 		return nil
 	end
 
-	-- Split response body and HTTP status code
-	local lines = vim.split(result, "\n", { plain = true })
-	local http_code = tonumber(lines[#lines])
-	local response_body = table.concat(vim.list_slice(lines, 1, #lines - 1), "\n")
-
-	log.debug(string.format("HTTP Status: %d", http_code or 0))
+	-- Check for curl errors
+	if response.exit ~= 0 then
+		log.error(string.format("HTTP request failed with exit code %d", response.exit))
+		if response.body then
+			log.error(string.format("Response: %s", response.body:sub(1, 500)))
+		end
+		return nil
+	end
 
 	-- Check HTTP status code
-	if not http_code or http_code < 200 or http_code >= 300 then
-		log.error(string.format("HTTP error %d", http_code or 0))
-		log.error(string.format("Response: %s", response_body:sub(1, 500)))
+	if response.status < 200 or response.status >= 300 then
+		log.error(string.format("HTTP error %d", response.status))
+		if response.body then
+			log.error(string.format("Response: %s", response.body:sub(1, 500)))
+		end
 		return nil
 	end
 
+	log.debug(string.format("HTTP Status: %d", response.status))
+
 	-- Empty response is OK for async endpoints or if explicitly allowed
+	local response_body = response.body or ""
 	if response_body == "" or response_body:match("^%s*$") then
 		if allow_empty then
 			log.debug("Empty response (OK for async endpoint)")
-			return true -- Return a truthy value to indicate success
+			return true
 		else
 			log.error("Empty response from OpenCode server")
 			return nil
 		end
 	end
 
+	-- Parse JSON response
 	local ok, decoded = pcall(vim.fn.json_decode, response_body)
 	if not ok then
 		log.error(string.format("Failed to parse JSON response: %s", response_body:sub(1, 500)))
@@ -82,12 +111,11 @@ local function start_opencode_server(callback)
 	local plugin_path = vim.fn.fnamemodify(debug.getinfo(1, "S").source:sub(2), ":h:h:h")
 	local config_path = plugin_path .. "/opencode/opencode.jsonc"
 
-	-- Get the socket path from the server module
-	local server = require("nvim-assist.server")
-	local socket_path = server.get_socket_path()
+	-- Get the Neovim RPC socket path
+	local nvim_socket = vim.v.servername
 
 	log.info("Setting OPENCODE_CONFIG to: " .. config_path)
-	log.info("Setting NVIM_ASSIST_SOCKET to: " .. socket_path)
+	log.info("Setting NVIM to: " .. nvim_socket)
 
 	-- Start opencode serve without port to get random available port
 	local stdout = uv.new_pipe(false)
@@ -99,7 +127,7 @@ local function start_opencode_server(callback)
 		table.insert(env, k .. "=" .. v)
 	end
 	table.insert(env, "OPENCODE_CONFIG=" .. config_path)
-	table.insert(env, "NVIM_ASSIST_SOCKET=" .. socket_path)
+	table.insert(env, "NVIM=" .. nvim_socket)
 
 	server_handle = uv.spawn(
 		"opencode",
@@ -128,46 +156,36 @@ local function start_opencode_server(callback)
 		return vim.notify("Failed to start OpenCode server", vim.log.levels.ERROR)
 	end
 
-	-- Read stderr to find the port (opencode prints "Listening on http://localhost:PORT")
+	-- Helper to create port reader for stdout/stderr
 	local output = ""
-	stderr:read_start(function(err, data)
-		if err then
-			log.error("Error reading OpenCode server output: " .. err)
-			vim.notify("Error reading OpenCode server output: " .. err, vim.log.levels.ERROR)
-			return
-		end
+	local function create_port_reader(stream_name)
+		return function(err, data)
+			if err then
+				if stream_name == "stderr" then
+					log.error("Error reading OpenCode server output: " .. err)
+					vim.notify("Error reading OpenCode server output: " .. err, vim.log.levels.ERROR)
+				end
+				return
+			end
 
-		if data then
-			output = output .. data
-			-- Look for port in output
-			local port = output:match("http://[^:]+:(%d+)")
-			if port and not server_port then
-				server_port = tonumber(port)
-				log.info(string.format("OpenCode server started on port %d", server_port))
-				vim.schedule(function()
-					callback(server_port)
-				end)
+			if data then
+				output = output .. data
+				-- Look for port in output
+				local port = output:match("http://[^:]+:(%d+)")
+				if port and not server_port then
+					server_port = tonumber(port)
+					log.info(string.format("OpenCode server started on port %d", server_port))
+					vim.schedule(function()
+						callback(server_port)
+					end)
+				end
 			end
 		end
-	end)
+	end
 
-	-- Also read stdout
-	stdout:read_start(function(err, data)
-		if err then
-			return
-		end
-		if data then
-			output = output .. data
-			local port = output:match("http://[^:]+:(%d+)")
-			if port and not server_port then
-				server_port = tonumber(port)
-				log.info(string.format("OpenCode server started on port %d", server_port))
-				vim.schedule(function()
-					callback(server_port)
-				end)
-			end
-		end
-	end)
+	-- Read both stdout and stderr to find the port
+	stderr:read_start(create_port_reader("stderr"))
+	stdout:read_start(create_port_reader("stdout"))
 end
 
 function M.start(callback)
@@ -189,6 +207,13 @@ end
 
 function M.is_running()
 	return server_handle ~= nil
+end
+
+-- URL encode helper for query parameters
+local function url_encode(str)
+	return string.gsub(str, "([^%w%-%.%_%~%/])", function(c)
+		return string.format("%%%02X", string.byte(c))
+	end)
 end
 
 -- Create an OpenCode session

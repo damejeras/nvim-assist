@@ -17,28 +17,28 @@ local current_level = LOG_LEVELS.DEBUG
 -- Initialize the logger with a log file path
 function M.init(path)
 	log_path = path
-	-- Don't open the file immediately, we'll do it lazily on first write
+
+	-- Create log directory if needed
+	local base_dir = vim.fn.fnamemodify(path, ":h")
+	vim.fn.mkdir(base_dir, "p")
+
+	-- Open log file immediately
+	log_file = io.open(path, "a")
+	if not log_file then
+		vim.notify("Failed to open log file: " .. path, vim.log.levels.WARN)
+	end
 end
 
 -- Internal function to write log message
 local function write_log(level_name, msg)
-	if not log_path then
+	if not log_file then
 		return
 	end
 
-	-- Open log file lazily
-	if not log_file then
-		local base_dir = vim.fn.fnamemodify(log_path, ":h")
-		vim.fn.mkdir(base_dir, "p")
-		log_file = io.open(log_path, "a")
-	end
-
-	if log_file then
-		local timestamp = os.date("%Y-%m-%d %H:%M:%S")
-		local log_msg = string.format("[%s] [%s] %s\n", timestamp, level_name, msg)
-		log_file:write(log_msg)
-		log_file:flush()
-	end
+	local timestamp = os.date("%Y-%m-%d %H:%M:%S")
+	local log_msg = string.format("[%s] [%s] %s\n", timestamp, level_name, msg)
+	log_file:write(log_msg)
+	log_file:flush()
 end
 
 -- Debug level logging

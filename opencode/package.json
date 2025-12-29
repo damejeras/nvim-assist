@@ -3,7 +3,8 @@
   "version": "1.0.0",
   "type": "module",
   "dependencies": {
-    "@opencode-ai/plugin": "latest"
+    "@opencode-ai/plugin": "latest",
+    "neovim": "^5.4.0"
   },
   "devDependencies": {
     "@types/node": "^20.0.0",

@@ -1,59 +1,34 @@
 import { type Plugin, tool } from "@opencode-ai/plugin";
-import { createConnection, Socket } from "net";
+import { attach, type NeovimClient } from "neovim";
+import { Socket } from "net";
 
 // ============================================================================
-// NVIM-ASSIST CLIENT
+// NVIM CLIENT
 // ============================================================================
 
 /**
- * Send a command to nvim-assist server and get response
+ * Connect to Neovim via msgpack-rpc
  */
-async function sendCommand(
-  socketPath: string,
-  command: string,
-  data?: any,
-): Promise<any> {
+async function connectToNvim(): Promise<NeovimClient> {
+  const socketPath = process.env.NVIM;
+
+  if (!socketPath) {
+    throw new Error("NVIM environment variable is not set");
+  }
+
   return new Promise((resolve, reject) => {
-    const socket: Socket = createConnection(socketPath, () => {
-      const message = JSON.stringify({ command, data }) + "\n";
-      socket.write(message);
-    });
+    const socket = new Socket();
 
-    let responseData = "";
-
-    socket.on("data", (chunk) => {
-      responseData += chunk.toString();
-      // Check if we have a complete line
-      if (responseData.includes("\n")) {
-        socket.end();
-      }
-    });
-
-    socket.on("end", () => {
-      try {
-        const response = JSON.parse(responseData.trim());
-        if (response.success === false) {
-          reject(new Error(response.error || "Command failed"));
-        } else {
-          resolve(response);
-        }
-      } catch (e) {
-        reject(new Error(`Failed to parse response: ${responseData}`));
-      }
+    socket.on("connect", () => {
+      const nvim = attach({ reader: socket, writer: socket });
+      resolve(nvim);
     });
 
     socket.on("error", (err) => {
-      reject(
-        new Error(
-          `Failed to connect to nvim-assist socket at ${socketPath}: ${err.message}`,
-        ),
-      );
+      reject(new Error(`Failed to connect to Neovim at ${socketPath}: ${err.message}`));
     });
 
-    socket.setTimeout(5000, () => {
-      socket.destroy();
-      reject(new Error("Connection timeout"));
-    });
+    socket.connect(socketPath);
   });
 }
 
@@ -62,12 +37,8 @@ async function sendCommand(
 // ============================================================================
 
 export const NvimAssistPlugin: Plugin = async () => {
-  // Get socket path from environment variable
-  const socketPath = process.env.NVIM_ASSIST_SOCKET;
-
-  if (!socketPath) {
-    throw new Error("NVIM_ASSIST_SOCKET environment variable is not set");
-  }
+  // Connect to Neovim once on plugin initialization
+  const nvim = await connectToNvim();
 
   return {
     tool: {
@@ -86,8 +57,34 @@ Usage:
 - For files not in this list, use the regular Read tool`,
         args: {},
         async execute() {
-          const response = await sendCommand(socketPath, "list_buffers");
-          return JSON.stringify(response.data, null, 2);
+          // Get all buffers
+          const buffers: number[] = await nvim.call("nvim_list_bufs", []);
+
+          // Filter for loaded, listed buffers with normal buftype
+          const result = [];
+          for (const bufnr of buffers) {
+            const isLoaded = await nvim.call("nvim_buf_is_loaded", [bufnr]);
+            if (!isLoaded) continue;
+
+            const filepath: string = await nvim.call("nvim_buf_get_name", [
+              bufnr,
+            ]);
+            const buftype: string = await nvim.call(
+              "nvim_buf_get_option",
+              [bufnr, "buftype"],
+            );
+            const listed: boolean = await nvim.call(
+              "nvim_buf_get_option",
+              [bufnr, "buflisted"],
+            );
+
+            // Only include normal file buffers (not help, quickfix, etc.)
+            if (buftype === "" && listed) {
+              result.push({ bufnr, filepath });
+            }
+          }
+
+          return JSON.stringify(result, null, 2);
         },
       }),
 
@@ -108,10 +105,28 @@ Usage:
           bufnr: tool.schema.number().describe("Buffer number to read"),
         },
         async execute(args) {
-          const response = await sendCommand(socketPath, "get_buffer", {
-            bufnr: args.bufnr,
-          });
-          return JSON.stringify(response.data, null, 2);
+          const bufnr = args.bufnr;
+
+          // Get buffer lines
+          const lines: string[] = await nvim.call("nvim_buf_get_lines", [
+            bufnr,
+            0,
+            -1,
+            false,
+          ]);
+
+          // Get filepath
+          const filepath: string = await nvim.call("nvim_buf_get_name", [
+            bufnr,
+          ]);
+
+          const result = {
+            bufnr,
+            content: lines.join("\n"),
+            filepath,
+          };
+
+          return JSON.stringify(result, null, 2);
         },
       }),
 
@@ -158,12 +173,26 @@ Usage:
             .describe("Replace all occurrences (default: false)"),
         },
         async execute(args) {
-          await sendCommand(socketPath, "replace_text", {
-            bufnr: args.bufnr,
-            old_string: args.oldString,
-            new_string: args.newString,
-            replace_all: args.replaceAll ?? false,
-          });
+          // Call the custom Lua function via lua API
+          const result = await nvim.lua(
+            `
+            local buffer = require("nvim-assist.buffer")
+            return buffer.replace_text(...)
+            `,
+            [
+              {
+                bufnr: args.bufnr,
+                old_string: args.oldString,
+                new_string: args.newString,
+                replace_all: args.replaceAll ?? false,
+              },
+            ]
+          );
+
+          // Check for errors from Lua function
+          if (result && typeof result === "object" && result.success === false) {
+            throw new Error(result.error || "Failed to replace text");
+          }
 
           return `Successfully replaced text in buffer ${args.bufnr}`;
         },

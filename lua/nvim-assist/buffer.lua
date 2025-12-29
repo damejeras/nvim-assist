@@ -1,17 +1,28 @@
 local M = {}
 local replace = require("nvim-assist.replace")
+local ui = require("nvim-assist.ui")
 
--- Get a specific buffer's content and metadata
-function M.get_buffer_content(bufnr)
-	bufnr = bufnr or vim.api.nvim_get_current_buf()
-
-	-- Validate buffer exists and is loaded
+-- Validate buffer exists and is loaded
+local function validate_buffer(bufnr)
 	if not vim.api.nvim_buf_is_valid(bufnr) then
 		return nil, "Buffer " .. bufnr .. " is not valid"
 	end
 
 	if not vim.api.nvim_buf_is_loaded(bufnr) then
 		return nil, "Buffer " .. bufnr .. " is not loaded"
+	end
+
+	return bufnr
+end
+
+-- Get a specific buffer's content and metadata
+function M.get_buffer_content(bufnr)
+	bufnr = bufnr or vim.api.nvim_get_current_buf()
+
+	-- Validate buffer exists and is loaded
+	local valid_bufnr, err = validate_buffer(bufnr)
+	if not valid_bufnr then
+		return nil, err
 	end
 
 	local lines = vim.api.nvim_buf_get_lines(bufnr, 0, -1, false)
@@ -63,12 +74,9 @@ function M.replace_text(replace_data)
 	end
 
 	-- Validate buffer exists and is loaded
-	if not vim.api.nvim_buf_is_valid(bufnr) then
-		return { success = false, error = "Buffer " .. bufnr .. " is not valid" }
-	end
-
-	if not vim.api.nvim_buf_is_loaded(bufnr) then
-		return { success = false, error = "Buffer " .. bufnr .. " is not loaded" }
+	local valid_bufnr, err = validate_buffer(bufnr)
+	if not valid_bufnr then
+		return { success = false, error = err }
 	end
 
 	-- Get buffer content
@@ -113,8 +121,14 @@ function M.replace_text(replace_data)
 	-- Calculate line difference
 	local line_diff = #new_lines - #old_lines
 
+	-- Update target lines to current extmark positions (captures manual edits)
+	ui.update_tracked_target_lines()
+
 	-- Apply the changes to the buffer
 	vim.api.nvim_buf_set_lines(bufnr, 0, -1, false, new_lines)
+
+	-- Reposition tracked extmarks after programmatic buffer change
+	ui.reposition_tracked_extmarks()
 
 	-- Adjust cursor positions for all windows showing this buffer
 	if first_changed_line and line_diff ~= 0 then
