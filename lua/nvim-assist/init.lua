@@ -7,9 +7,10 @@ local prompts = require("nvim-assist.prompts")
 -- Default configuration
 M.config = {
 	opencode = {
-		agent = "build",
+		agent = "nvim-assist",
 		provider = "openrouter",
 		model = "moonshotai/kimi-k2",
+		auto_delete_idle_sessions = true, -- Auto-delete sessions when they go idle
 	},
 }
 
@@ -33,10 +34,10 @@ local function run_assist(bufnr, filepath, start_line, end_line, content, user_p
 		end
 
 		-- Create tracked virtual line above the selection
-		local extmark_id = ui.create_tracked_virtual_text(bufnr, start_line, "AI: Starting implementation...")
+		local extmark_id = ui.create_tracked_virtual_text(bufnr, start_line, "Starting implementation...")
 
 		-- Track current text for spinner updates
-		local current_text = "AI: Starting implementation..."
+		local current_text = "Starting implementation..."
 
 		-- Animate the spinner
 		local timer = ui.create_spinner(bufnr, extmark_id, function()
@@ -73,7 +74,7 @@ local function run_assist(bufnr, filepath, start_line, end_line, content, user_p
 			return
 		end
 
-		current_text = "AI: Analyzing function..."
+		current_text = "Analyzing function..."
 
 		-- Subscribe to OpenCode events to update UI and track completion
 		opencode.subscribe_to_events(port, session.id, function(event, session_id)
@@ -83,9 +84,9 @@ local function run_assist(bufnr, filepath, start_line, end_line, content, user_p
 				if part and part.sessionID == session.id then
 					-- Update virtual text based on part type
 					if part.type == "tool" and part.tool then
-						current_text = string.format("AI: Running %s", part.tool)
+						current_text = string.format("Running %s", part.tool)
 					elseif part.type == "text" then
-						current_text = "AI: Thinking..."
+						current_text = "Thinking..."
 					end
 				end
 			elseif event.payload.type == "session.idle" and event.payload.properties then
@@ -96,6 +97,11 @@ local function run_assist(bufnr, filepath, start_line, end_line, content, user_p
 					timer:close()
 					ui.clear_virtual_text(bufnr, extmark_id)
 					log.info("Session completed")
+
+					-- Auto-delete idle sessions if configured
+					if M.config.opencode.auto_delete_idle_sessions then
+						opencode.delete_session(port, session.id)
+					end
 				end
 			end
 		end)
@@ -128,13 +134,7 @@ local function assist(custom_prompt, line1, line2)
 	local content = table.concat(content_lines, "\n")
 
 	log.debug(
-		string.format(
-			"Working with lines %d-%d in buffer %d (%s)",
-			start_line + 1,
-			end_line + 1,
-			bufnr,
-			filepath
-		)
+		string.format("Working with lines %d-%d in buffer %d (%s)", start_line + 1, end_line + 1, bufnr, filepath)
 	)
 	log.debug(string.format("Captured content: %s", content:sub(1, 100)))
 
@@ -145,7 +145,7 @@ local function assist(custom_prompt, line1, line2)
 	-- If no custom prompt provided, ask user
 	if not custom_prompt then
 		vim.ui.input({
-			prompt = "AI Task: ",
+			prompt = "Task: ",
 			default = "",
 		}, function(input)
 			-- Clear highlights

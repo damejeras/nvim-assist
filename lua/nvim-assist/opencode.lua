@@ -46,10 +46,6 @@ local function request(port, method, path, body, allow_empty)
 		response = curl_lib.get(url, opts)
 	elseif method == "POST" then
 		response = curl_lib.post(url, opts)
-	elseif method == "PUT" then
-		response = curl_lib.put(url, opts)
-	elseif method == "DELETE" then
-		response = curl_lib.delete(url, opts)
 	else
 		log.error(string.format("Unsupported HTTP method: %s", method))
 		return nil
@@ -121,7 +117,7 @@ local function start_opencode_server(callback)
 	local stdout = uv.new_pipe(false)
 	local stderr = uv.new_pipe(false)
 
-	-- Copy current environment and add OPENCODE_CONFIG and NVIM_ASSIST_SOCKET
+	-- Inherit parent environment and add required variables
 	local env = {}
 	for k, v in pairs(vim.fn.environ()) do
 		table.insert(env, k .. "=" .. v)
@@ -230,6 +226,38 @@ function M.create_session(port, cwd, agent_name)
 
 	log.info(string.format("OpenCode session created: %s (agent: %s)", session.id, agent_name))
 	return session
+end
+
+-- Delete an OpenCode session
+function M.delete_session(port, session_id)
+	log.info("Deleting OpenCode session: " .. session_id)
+
+	local url = string.format("http://localhost:%d/session/%s", port, session_id)
+	log.debug(string.format("HTTP DELETE: %s", url))
+
+	local curl_lib = get_curl()
+	local response = curl_lib.request({
+		url = url,
+		method = "delete",
+		headers = {
+			["content-type"] = "application/json",
+		},
+	})
+
+	-- Check for curl errors
+	if response.exit ~= 0 then
+		log.error(string.format("Failed to delete session %s (exit code %d)", session_id, response.exit))
+		return false
+	end
+
+	-- Check HTTP status code
+	if response.status < 200 or response.status >= 300 then
+		log.error(string.format("Failed to delete session %s (HTTP %d)", session_id, response.status))
+		return false
+	end
+
+	log.info(string.format("Session %s deleted successfully", session_id))
+	return true
 end
 
 -- Send a prompt to an OpenCode session asynchronously
