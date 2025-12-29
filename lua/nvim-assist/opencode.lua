@@ -5,6 +5,12 @@ local server_handle = nil
 local server_port = nil
 local log = require("nvim-assist.log")
 
+-- Constants
+local LOG_TRUNCATE_LENGTH = 500
+local LOG_PROMPT_LENGTH = 200
+local HTTP_SUCCESS_MIN = 200
+local HTTP_SUCCESS_MAX = 300
+
 -- Lazy load plenary curl
 local curl = nil
 local function get_curl()
@@ -18,14 +24,32 @@ local function get_curl()
 	return curl
 end
 
+-- Helper to format error messages with optional detail
+function M.format_error(base_msg, err)
+	if err then
+		return base_msg .. ": " .. err
+	end
+	return base_msg
+end
+
+-- Local alias for internal use
+local format_error = M.format_error
+
+-- Helper to check if HTTP status is successful
+local function is_http_success(status)
+	return status >= HTTP_SUCCESS_MIN and status < HTTP_SUCCESS_MAX
+end
+
 -- Make HTTP request to OpenCode server
 local function request(port, method, path, body, allow_empty)
 	local url = string.format("http://localhost:%d%s", port, path)
 	log.debug(string.format("HTTP %s: %s", method, url))
 
+	-- Encode body once for both logging and request
+	local json_body = nil
 	if body then
-		local json = vim.fn.json_encode(body)
-		log.debug(string.format("Request body: %s", json:sub(1, 500)))
+		json_body = vim.fn.json_encode(body)
+		log.debug(string.format("Request body: %s", json_body:sub(1, LOG_TRUNCATE_LENGTH)))
 	end
 
 	-- Prepare request options
@@ -35,8 +59,8 @@ local function request(port, method, path, body, allow_empty)
 		},
 	}
 
-	if body then
-		opts.body = vim.fn.json_encode(body)
+	if json_body then
+		opts.body = json_body
 	end
 
 	-- Make the request using the appropriate method
@@ -54,16 +78,16 @@ local function request(port, method, path, body, allow_empty)
 	if response.exit ~= 0 then
 		local err = string.format("HTTP request failed with exit code %d", response.exit)
 		if response.body then
-			log.debug(string.format("Response: %s", response.body:sub(1, 500)))
+			log.debug(string.format("Response: %s", response.body:sub(1, LOG_TRUNCATE_LENGTH)))
 		end
 		return nil, err
 	end
 
 	-- Check HTTP status code
-	if response.status < 200 or response.status >= 300 then
+	if not is_http_success(response.status) then
 		local err = string.format("HTTP error %d", response.status)
 		if response.body then
-			log.debug(string.format("Response: %s", response.body:sub(1, 500)))
+			log.debug(string.format("Response: %s", response.body:sub(1, LOG_TRUNCATE_LENGTH)))
 		end
 		return nil, err
 	end
@@ -84,10 +108,10 @@ local function request(port, method, path, body, allow_empty)
 	-- Parse JSON response
 	local ok, decoded = pcall(vim.fn.json_decode, response_body)
 	if not ok then
-		return nil, string.format("Failed to parse JSON response: %s", response_body:sub(1, 500))
+		return nil, string.format("Failed to parse JSON response: %s", response_body:sub(1, LOG_TRUNCATE_LENGTH))
 	end
 
-	log.debug(string.format("Response: %s", vim.fn.json_encode(decoded):sub(1, 500)))
+	log.debug(string.format("Response: %s", vim.fn.json_encode(decoded):sub(1, LOG_TRUNCATE_LENGTH)))
 	return decoded
 end
 
@@ -210,21 +234,19 @@ local function url_encode(str)
 end
 
 -- Create an OpenCode session
-function M.create_session(port, cwd, agent_name)
-	log.debug("Creating OpenCode session with agent: " .. agent_name)
-	local session, err = request(port, "POST", "/session?directory=" .. url_encode(cwd), {
-		agentName = agent_name,
-	})
+function M.create_session(port, cwd)
+	log.debug("Creating OpenCode session")
+	local session, err = request(port, "POST", "/session?directory=" .. url_encode(cwd), vim.empty_dict())
 
 	if not session then
-		return nil, "Failed to create OpenCode session" .. (err and (": " .. err) or "")
+		return nil, format_error("Failed to create OpenCode session", err)
 	end
 
 	if not session.id then
 		return nil, "OpenCode session created without ID"
 	end
 
-	log.info(string.format("OpenCode session created: %s (agent: %s)", session.id, agent_name))
+	log.info(string.format("OpenCode session created: %s", session.id))
 	return session
 end
 
@@ -252,7 +274,7 @@ function M.delete_session(port, session_id)
 	end
 
 	-- Check HTTP status code
-	if response.status < 200 or response.status >= 300 then
+	if not is_http_success(response.status) then
 		local err = string.format("Failed to delete session %s (HTTP %d)", session_id, response.status)
 		log.error(err)
 		return nil, err
@@ -263,27 +285,47 @@ function M.delete_session(port, session_id)
 end
 
 -- Send a prompt to an OpenCode session asynchronously
-function M.send_prompt_async(port, session_id, cwd, prompt_text, provider_id, model_id)
+-- provider_id, model_id, and agent_name are optional - if not provided, uses defaults
+function M.send_prompt_async(port, session_id, cwd, prompt_text, provider_id, model_id, agent_name)
 	log.debug("Sending prompt to OpenCode session " .. session_id)
-	log.debug(string.format("Model: %s/%s", provider_id, model_id))
-	log.debug("Prompt: " .. prompt_text:gsub("\n", " "):sub(1, 200) .. "...")
+	if agent_name then
+		log.debug("Using agent: " .. agent_name)
+	end
+	if provider_id and model_id then
+		log.debug(string.format("Model: %s/%s", provider_id, model_id))
+	else
+		log.debug("Using default model configuration")
+	end
+	log.debug("Prompt: " .. prompt_text:gsub("\n", " "):sub(1, LOG_PROMPT_LENGTH) .. "...")
+
+	-- Build request body
+	local body = {
+		parts = {
+			{
+				type = "text",
+				text = prompt_text,
+			},
+		},
+	}
+
+	-- Include agent if specified
+	if agent_name then
+		body.agent = agent_name
+	end
+
+	-- Only include model if explicitly provided (otherwise use defaults)
+	if provider_id and model_id then
+		body.model = {
+			providerID = provider_id,
+			modelID = model_id,
+		}
+	end
 
 	local response, err = request(
 		port,
 		"POST",
 		string.format("/session/%s/prompt_async?directory=%s", session_id, url_encode(cwd)),
-		{
-			parts = {
-				{
-					type = "text",
-					text = prompt_text,
-				},
-			},
-			model = {
-				providerID = provider_id,
-				modelID = model_id,
-			},
-		},
+		body,
 		true -- Allow empty response for async endpoint
 	)
 
@@ -291,7 +333,7 @@ function M.send_prompt_async(port, session_id, cwd, prompt_text, provider_id, mo
 		log.info("Prompt sent successfully")
 		return true
 	else
-		return nil, "Failed to send prompt to OpenCode" .. (err and (": " .. err) or "")
+		return nil, format_error("Failed to send prompt to OpenCode", err)
 	end
 end
 
@@ -308,23 +350,17 @@ function M.subscribe_to_events(port, session_id, on_event)
 			end
 
 			for _, line in ipairs(data) do
-				if line == "" or not line:match("^data:") then
-					goto continue
+				if line ~= "" and line:match("^data:") then
+					local json_str = line:gsub("^data:%s*", "")
+					local ok, event = pcall(vim.fn.json_decode, json_str)
+
+					if ok and event and event.payload then
+						-- Call the event handler
+						vim.schedule(function()
+							on_event(event, session_id)
+						end)
+					end
 				end
-
-				local json_str = line:gsub("^data:%s*", "")
-				local ok, event = pcall(vim.fn.json_decode, json_str)
-
-				if not ok or not event or not event.payload then
-					goto continue
-				end
-
-				-- Call the event handler
-				vim.schedule(function()
-					on_event(event, session_id)
-				end)
-
-				::continue::
 			end
 		end,
 		on_stderr = function(_, data)

@@ -1,5 +1,4 @@
 local M = {}
-local log = require("nvim-assist.log")
 local replace = require("nvim-assist.replace")
 local ui = require("nvim-assist.ui")
 
@@ -42,8 +41,8 @@ function M.list_buffers()
 	for _, bufnr in ipairs(bufs) do
 		if vim.api.nvim_buf_is_loaded(bufnr) then
 			local filepath = vim.api.nvim_buf_get_name(bufnr)
-			local buftype = vim.api.nvim_buf_get_option(bufnr, "buftype")
-			local listed = vim.api.nvim_buf_get_option(bufnr, "buflisted")
+			local buftype = vim.bo[bufnr].buftype
+			local listed = vim.bo[bufnr].buflisted
 
 			-- Only include normal file buffers (not help, quickfix, etc.)
 			if buftype == "" and listed then
@@ -70,10 +69,6 @@ function M.replace_text(replace_data)
 		return { success = false, error = "old_string and new_string are required" }
 	end
 
-	if old_string == new_string then
-		return { success = false, error = "oldString and newString must be different" }
-	end
-
 	-- Validate buffer exists and is loaded
 	local valid_bufnr, err = validate_buffer(bufnr)
 	if not valid_bufnr then
@@ -93,34 +88,31 @@ function M.replace_text(replace_data)
 	end
 
 	-- Attempt replacement
-	local new_content, err = replace.replace(content, old_string, new_string, replace_all)
+	local new_content, replace_err = replace.replace(content, old_string, new_string, replace_all)
 
-	if err then
-		return { success = false, error = err }
+	if replace_err or new_content == nil then
+		return { success = false, error = replace_err }
 	end
 
 	-- Split into lines
-	local old_lines = lines
 	local new_lines = vim.split(new_content, "\n", { plain = true })
 
 	-- Find the first line where change occurs
 	local first_changed_line = nil
-	for i = 1, math.min(#old_lines, #new_lines) do
-		if old_lines[i] ~= new_lines[i] then
+	for i = 1, math.min(#lines, #new_lines) do
+		if lines[i] ~= new_lines[i] then
 			first_changed_line = i
 			break
 		end
 	end
 
-	-- If no difference found in common lines, change must be at the end
-	if not first_changed_line then
-		if #old_lines ~= #new_lines then
-			first_changed_line = math.min(#old_lines, #new_lines) + 1
-		end
+	-- If no difference found in common lines but sizes differ, change is at the end
+	if not first_changed_line and #lines ~= #new_lines then
+		first_changed_line = math.min(#lines, #new_lines) + 1
 	end
 
 	-- Calculate line difference
-	local line_diff = #new_lines - #old_lines
+	local line_diff = #new_lines - #lines
 
 	-- Update target lines to current extmark positions (captures manual edits)
 	ui.update_tracked_target_lines()

@@ -25714,21 +25714,10 @@ Usage:
 - For files not in this list, use the regular Read tool`,
         args: {},
         async execute() {
-          const buffers = await nvim.call("nvim_list_bufs", []);
-          const result = [];
-          for (const bufnr of buffers) {
-            const isLoaded = await nvim.call("nvim_buf_is_loaded", [bufnr]);
-            if (!isLoaded)
-              continue;
-            const filepath = await nvim.call("nvim_buf_get_name", [
-              bufnr
-            ]);
-            const buftype = await nvim.call("nvim_buf_get_option", [bufnr, "buftype"]);
-            const listed = await nvim.call("nvim_buf_get_option", [bufnr, "buflisted"]);
-            if (buftype === "" && listed) {
-              result.push({ bufnr, filepath });
-            }
-          }
+          const result = await nvim.lua(`
+            local buffer = require("nvim-assist.buffer")
+            return buffer.list_buffers()
+            `, []);
           return JSON.stringify(result, null, 2);
         }
       }),
@@ -25749,22 +25738,13 @@ Usage:
           bufnr: tool.schema.number().describe("Buffer number to read")
         },
         async execute(args) {
-          const bufnr = args.bufnr;
-          const lines = await nvim.call("nvim_buf_get_lines", [
-            bufnr,
-            0,
-            -1,
-            false
-          ]);
-          const filepath = await nvim.call("nvim_buf_get_name", [
-            bufnr
-          ]);
-          const result = {
-            bufnr,
-            content: lines.join(`
-`),
-            filepath
-          };
+          const result = await nvim.lua(`
+            local buffer = require("nvim-assist.buffer")
+            return buffer.get_buffer_content(...)
+            `, [args.bufnr]);
+          if (result && Array.isArray(result) && result[1] === null) {
+            throw new Error(result[2] || "Failed to get buffer content");
+          }
           return JSON.stringify(result, null, 2);
         }
       }),
@@ -25783,9 +25763,9 @@ Matching Strategies (tried in order):
 4. Multi-occurrence match
 
 Error Handling:
-- "oldString not found in content" - Text cannot be found
-- "Found multiple matches for oldString. Provide more surrounding lines..." - Ambiguous match, needs more context
-- "oldString and newString must be different" - Validation error
+- "old_string not found in content" - Text cannot be found
+- "Found multiple matches for old_string. Provide more surrounding lines..." - Ambiguous match, needs more context
+- "old_string and new_string must be different" - Validation error
 - "Buffer X is not valid/loaded" - Invalid buffer number
 
 Usage:

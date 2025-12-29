@@ -4,13 +4,24 @@ local log = require("nvim-assist.log")
 local ui = require("nvim-assist.ui")
 local prompts = require("nvim-assist.prompts")
 
+-- Helper to format error messages with optional detail
+local function format_error(base_msg, err)
+	if err then
+		return base_msg .. ": " .. err
+	end
+	return base_msg
+end
+
+-- Constants
+local LOG_CONTENT_LENGTH = 100
+local AGENT_NAME = "nvim-assist"
+
 -- Default configuration
 M.config = {
 	opencode = {
-		agent = "nvim-assist",
 		provider = "openrouter",
 		model = "moonshotai/kimi-k2",
-		auto_delete_idle_sessions = true, -- Auto-delete sessions when they go idle
+		auto_delete_idle_sessions = false, -- Auto-delete sessions when they go idle
 	},
 }
 
@@ -27,10 +38,10 @@ local function run_assist(bufnr, filepath, start_line, end_line, content, user_p
 
 		local cwd = vim.fn.getcwd()
 
-		-- Create OpenCode session with configured agent
-		local session, err = opencode.create_session(port, cwd, M.config.opencode.agent)
+		-- Create OpenCode session
+		local session, err = opencode.create_session(port, cwd)
 		if not session then
-			local error_msg = "Failed to create OpenCode session" .. (err and (": " .. err) or "")
+			local error_msg = format_error("Failed to create OpenCode session", err)
 			log.error(error_msg)
 			return vim.notify(error_msg, vim.log.levels.ERROR)
 		end
@@ -59,21 +70,22 @@ local function run_assist(bufnr, filepath, start_line, end_line, content, user_p
 			code_section = content,
 		})
 
-		-- Send prompt asynchronously
+		-- Send prompt asynchronously with agent and model
 		local success, err = opencode.send_prompt_async(
 			port,
 			session.id,
 			cwd,
 			prompt_text,
 			M.config.opencode.provider,
-			M.config.opencode.model
+			M.config.opencode.model,
+			AGENT_NAME
 		)
 
 		if not success then
 			timer:stop()
 			timer:close()
 			ui.clear_virtual_text(bufnr, extmark_id)
-			local error_msg = "Failed to send prompt" .. (err and (": " .. err) or "")
+			local error_msg = format_error("Failed to send prompt", err)
 			log.error(error_msg)
 			vim.notify(error_msg, vim.log.levels.ERROR)
 			return
@@ -144,7 +156,7 @@ local function assist(custom_prompt, line1, line2)
 	log.debug(
 		string.format("Working with lines %d-%d in buffer %d (%s)", start_line + 1, end_line + 1, bufnr, filepath)
 	)
-	log.debug(string.format("Captured content: %s", content:sub(1, 100)))
+	log.debug(string.format("Captured content: %s", content:sub(1, LOG_CONTENT_LENGTH)))
 
 	-- Highlight the region
 	local highlight_marks = ui.highlight_region(bufnr, start_line, end_line)
@@ -153,7 +165,7 @@ local function assist(custom_prompt, line1, line2)
 	-- If no custom prompt provided, ask user
 	if not custom_prompt then
 		vim.ui.input({
-			prompt = "Task: ",
+			prompt = "Prompt: ",
 			default = "",
 		}, function(input)
 			-- Clear highlights
@@ -177,6 +189,8 @@ end
 -- Setup function
 function M.setup(opts)
 	opts = opts or {}
+
+	vim.keymap.set("v", "<leader>t", ":Assist<CR>")
 
 	-- Merge user config with defaults
 	M.config = vim.tbl_deep_extend("force", M.config, opts)

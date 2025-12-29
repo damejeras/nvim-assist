@@ -91,22 +91,33 @@ function M.get_path()
 	return log_path
 end
 
--- Open log file in a split with tail -f
+-- Open log file in a split with auto-reload
 function M.tail_log()
 	if not log_path then
 		vim.notify("Log file not initialized", vim.log.levels.WARN)
 		return
 	end
 
-	vim.cmd("split")
-	local bufnr = vim.api.nvim_create_buf(false, true)
-	vim.api.nvim_win_set_buf(0, bufnr)
+	-- Open log file in a split
+	vim.cmd("split " .. vim.fn.fnameescape(log_path))
+	local bufnr = vim.api.nvim_get_current_buf()
 
-	vim.fn.termopen("tail -f " .. vim.fn.shellescape(log_path))
+	-- Enable autoread for this buffer
+	vim.bo[bufnr].autoread = true
 
-	-- Set buffer options to prevent filetype detection
-	vim.bo[bufnr].filetype = ""
-	vim.bo[bufnr].buftype = "terminal"
+	-- Jump to end of file
+	vim.cmd("normal! G")
+
+	-- Set up autocommand to check for changes and jump to end
+	local augroup = vim.api.nvim_create_augroup("NvimAssistLogTail", { clear = false })
+	vim.api.nvim_create_autocmd({ "CursorHold", "FocusGained" }, {
+		group = augroup,
+		buffer = bufnr,
+		callback = function()
+			vim.cmd("checktime")
+			vim.cmd("normal! G")
+		end,
+	})
 end
 
 return M

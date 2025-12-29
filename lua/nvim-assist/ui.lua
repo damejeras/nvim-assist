@@ -5,6 +5,26 @@ local ns_id = vim.api.nvim_create_namespace("nvim-assist")
 
 -- Spinner frames for loading animation
 local spinner_frames = { "⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏" }
+local SPINNER_UPDATE_INTERVAL_MS = 100
+
+-- Helper to check if buffer is valid and loaded
+local function is_buffer_valid(bufnr)
+	return vim.api.nvim_buf_is_valid(bufnr) and vim.api.nvim_buf_is_loaded(bufnr)
+end
+
+-- Safe extmark operations (pcall wrappers)
+local function safe_get_extmark(bufnr, extmark_id, opts)
+	local ok, result = pcall(vim.api.nvim_buf_get_extmark_by_id, bufnr, ns_id, extmark_id, opts or {})
+	return ok and result or nil
+end
+
+local function safe_set_extmark(bufnr, line, col, opts)
+	pcall(vim.api.nvim_buf_set_extmark, bufnr, ns_id, line, col, opts)
+end
+
+local function safe_del_extmark(bufnr, extmark_id)
+	pcall(vim.api.nvim_buf_del_extmark, bufnr, ns_id, extmark_id)
+end
 
 -- Store target line for tracked extmarks
 -- This allows us to reposition them after programmatic buffer changes
@@ -50,7 +70,7 @@ end
 -- Helper to update virtual line using extmark ID
 function M.update_virtual_text(bufnr, extmark_id, text, spinner_index)
 	-- Check if buffer is valid and loaded
-	if not vim.api.nvim_buf_is_valid(bufnr) or not vim.api.nvim_buf_is_loaded(bufnr) then
+	if not is_buffer_valid(bufnr) then
 		return
 	end
 
@@ -61,17 +81,18 @@ function M.update_virtual_text(bufnr, extmark_id, text, spinner_index)
 	end
 
 	-- Try to get the current extmark position
-	local ok, pos = pcall(vim.api.nvim_buf_get_extmark_by_id, bufnr, ns_id, extmark_id, {})
-	if not ok or not pos or #pos == 0 then
+	local pos = safe_get_extmark(bufnr, extmark_id)
+	if not pos or #pos == 0 then
 		return
 	end
 
 	-- Update at the current position (let it track naturally with buffer changes)
-	local indent = get_line_indent(bufnr, pos[1])
+	local line, col = pos[1], pos[2]
+	local indent = get_line_indent(bufnr, line)
 	local spinner = spinner_index and spinner_frames[spinner_index] or ""
 	local prefix = spinner_index and (spinner .. " ") or ""
 
-	pcall(vim.api.nvim_buf_set_extmark, bufnr, ns_id, pos[1], pos[2], {
+	safe_set_extmark(bufnr, line, col, {
 		id = extmark_id,
 		virt_lines = { { { indent .. prefix .. text, "Comment" } } },
 		virt_lines_above = true,
@@ -80,7 +101,7 @@ end
 
 -- Helper to clear virtual text using extmark ID
 function M.clear_virtual_text(bufnr, extmark_id)
-	pcall(vim.api.nvim_buf_del_extmark, bufnr, ns_id, extmark_id)
+	safe_del_extmark(bufnr, extmark_id)
 	tracked_extmarks[extmark_id] = nil
 end
 
@@ -91,21 +112,19 @@ function M.update_tracked_target_lines()
 		local bufnr = tracked.bufnr
 
 		-- Check if buffer is still valid
-		if not vim.api.nvim_buf_is_valid(bufnr) or not vim.api.nvim_buf_is_loaded(bufnr) then
-			tracked_extmarks[extmark_id] = nil
-			goto continue
-		end
-
-		-- Get current extmark position
-		local ok, pos = pcall(vim.api.nvim_buf_get_extmark_by_id, bufnr, ns_id, extmark_id, {})
-		if ok and pos and #pos > 0 then
-			-- Update target_line to current position (reflects manual edits)
-			tracked.target_line = pos[1]
+		if is_buffer_valid(bufnr) then
+			-- Get current extmark position
+			local pos = safe_get_extmark(bufnr, extmark_id)
+			if pos and #pos > 0 then
+				-- Update target_line to current position (reflects manual edits)
+				local line = pos[1]
+				tracked.target_line = line
+			else
+				tracked_extmarks[extmark_id] = nil
+			end
 		else
 			tracked_extmarks[extmark_id] = nil
 		end
-
-		::continue::
 	end
 end
 
@@ -117,39 +136,35 @@ function M.reposition_tracked_extmarks()
 		local target_line = tracked.target_line
 
 		-- Check if buffer is still valid
-		if not vim.api.nvim_buf_is_valid(bufnr) or not vim.api.nvim_buf_is_loaded(bufnr) then
-			tracked_extmarks[extmark_id] = nil
-			goto continue
-		end
+		if is_buffer_valid(bufnr) then
+			-- Get current extmark details
+			local pos = safe_get_extmark(bufnr, extmark_id, { details = true })
+			if pos and #pos > 0 then
+				-- If extmark is not at target line, reposition it
+				local line, _, details = pos[1], pos[2], pos[3] or {}
+				if line ~= target_line then
+					local indent = get_line_indent(bufnr, target_line)
 
-		-- Get current extmark details
-		local ok, pos = pcall(vim.api.nvim_buf_get_extmark_by_id, bufnr, ns_id, extmark_id, { details = true })
-		if not ok or not pos or #pos == 0 then
-			tracked_extmarks[extmark_id] = nil
-			goto continue
-		end
+					-- Update virt_lines with proper indentation
+					if details.virt_lines and details.virt_lines[1] and details.virt_lines[1][1] then
+						local old_text = details.virt_lines[1][1][1] or ""
+						-- Remove old indentation and add new indentation
+						local text_without_indent = old_text:match("^%s*(.*)") or old_text
+						details.virt_lines[1][1][1] = indent .. text_without_indent
+					end
 
-		-- If extmark is not at target line, reposition it
-		if pos[1] ~= target_line then
-			local details = pos[3] or {}
-			local indent = get_line_indent(bufnr, target_line)
-
-			-- Update virt_lines with proper indentation
-			if details.virt_lines and details.virt_lines[1] and details.virt_lines[1][1] then
-				local old_text = details.virt_lines[1][1][1] or ""
-				-- Remove old indentation and add new indentation
-				local text_without_indent = old_text:match("^%s*(.*)") or old_text
-				details.virt_lines[1][1][1] = indent .. text_without_indent
+					safe_set_extmark(bufnr, target_line, 0, {
+						id = extmark_id,
+						virt_lines = details.virt_lines,
+						virt_lines_above = true,
+					})
+				end
+			else
+				tracked_extmarks[extmark_id] = nil
 			end
-
-			pcall(vim.api.nvim_buf_set_extmark, bufnr, ns_id, target_line, 0, {
-				id = extmark_id,
-				virt_lines = details.virt_lines,
-				virt_lines_above = true,
-			})
+		else
+			tracked_extmarks[extmark_id] = nil
 		end
-
-		::continue::
 	end
 end
 
@@ -175,7 +190,7 @@ end
 -- Helper to clear region highlights
 function M.clear_region_highlights(bufnr, extmarks)
 	for _, mark_id in ipairs(extmarks) do
-		pcall(vim.api.nvim_buf_del_extmark, bufnr, ns_id, mark_id)
+		safe_del_extmark(bufnr, mark_id)
 	end
 end
 
@@ -186,8 +201,8 @@ function M.create_spinner(bufnr, extmark_id, current_text_callback)
 	local timer = vim.loop.new_timer()
 
 	timer:start(
-		100,
-		100,
+		SPINNER_UPDATE_INTERVAL_MS,
+		SPINNER_UPDATE_INTERVAL_MS,
 		vim.schedule_wrap(function()
 			spinner_index = (spinner_index % #spinner_frames) + 1
 			local text = current_text_callback()
@@ -195,7 +210,7 @@ function M.create_spinner(bufnr, extmark_id, current_text_callback)
 		end)
 	)
 
-	return timer, spinner_index
+	return timer
 end
 
 return M

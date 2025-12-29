@@ -18,8 +18,6 @@ local function levenshtein(a, b)
 				matrix[i][j] = j
 			elseif j == 0 then
 				matrix[i][j] = i
-			else
-				matrix[i][j] = 0
 			end
 		end
 	end
@@ -39,6 +37,61 @@ local function trim(s)
 	return s:match("^%s*(.-)%s*$")
 end
 
+-- Split content into lines
+local function split_into_lines(text)
+	return vim.split(text, "\n", { plain = true })
+end
+
+-- Extract text content for a range of lines
+local function extract_line_range(original_lines, content, start_line, end_line)
+	local match_start_index = 0
+	for k = 1, start_line - 1 do
+		match_start_index = match_start_index + #original_lines[k] + 1
+	end
+
+	local match_end_index = match_start_index
+	for k = start_line, end_line do
+		match_end_index = match_end_index + #original_lines[k]
+		if k < end_line then
+			match_end_index = match_end_index + 1
+		end
+	end
+
+	return content:sub(match_start_index + 1, match_end_index)
+end
+
+-- Calculate similarity between a block in original_lines and search_lines
+local function calculate_block_similarity(original_lines, search_lines, start_line, end_line)
+	local search_block_size = #search_lines
+	local actual_block_size = end_line - start_line + 1
+	local lines_to_check = math.min(search_block_size - 2, actual_block_size - 2)
+
+	if lines_to_check <= 0 then
+		return 1.0
+	end
+
+	local similarity = 0
+	for j = 1, lines_to_check do
+		local original_line = trim(original_lines[start_line + j])
+		local search_line = trim(search_lines[j + 1])
+		local max_len = math.max(#original_line, #search_line)
+
+		if max_len > 0 then
+			local distance = levenshtein(original_line, search_line)
+			similarity = similarity + (1 - distance / max_len)
+		end
+	end
+
+	return similarity / lines_to_check
+end
+
+-- Remove trailing empty line from lines array if present
+local function remove_trailing_empty_line(lines)
+	if lines[#lines] == "" then
+		table.remove(lines)
+	end
+end
+
 -- Simple exact match replacer
 local function simple_replacer(content, find)
 	if content:find(find, 1, true) then
@@ -50,13 +103,10 @@ end
 -- Line-trimmed replacer: match lines when trimmed whitespace is equal
 local function line_trimmed_replacer(content, find)
 	local results = {}
-	local original_lines = vim.split(content, "\n", { plain = true })
-	local search_lines = vim.split(find, "\n", { plain = true })
+	local original_lines = split_into_lines(content)
+	local search_lines = split_into_lines(find)
 
-	-- Remove trailing empty line if present
-	if search_lines[#search_lines] == "" then
-		table.remove(search_lines)
-	end
+	remove_trailing_empty_line(search_lines)
 
 	for i = 1, #original_lines - #search_lines + 1 do
 		local matches = true
@@ -72,21 +122,8 @@ local function line_trimmed_replacer(content, find)
 		end
 
 		if matches then
-			-- Calculate match indices
-			local match_start_index = 0
-			for k = 1, i - 1 do
-				match_start_index = match_start_index + #original_lines[k] + 1
-			end
-
-			local match_end_index = match_start_index
-			for k = 1, #search_lines do
-				match_end_index = match_end_index + #original_lines[i + k - 1]
-				if k < #search_lines then
-					match_end_index = match_end_index + 1
-				end
-			end
-
-			table.insert(results, content:sub(match_start_index + 1, match_end_index))
+			local end_line = i + #search_lines - 1
+			table.insert(results, extract_line_range(original_lines, content, i, end_line))
 		end
 	end
 
@@ -96,17 +133,14 @@ end
 -- Block anchor replacer: match blocks using first and last lines as anchors
 local function block_anchor_replacer(content, find)
 	local results = {}
-	local original_lines = vim.split(content, "\n", { plain = true })
-	local search_lines = vim.split(find, "\n", { plain = true })
+	local original_lines = split_into_lines(content)
+	local search_lines = split_into_lines(find)
 
 	if #search_lines < 3 then
 		return results
 	end
 
-	-- Remove trailing empty line if present
-	if search_lines[#search_lines] == "" then
-		table.remove(search_lines)
-	end
+	remove_trailing_empty_line(search_lines)
 
 	local first_line_search = trim(search_lines[1])
 	local last_line_search = trim(search_lines[#search_lines])
@@ -132,47 +166,16 @@ local function block_anchor_replacer(content, find)
 	-- Single candidate case
 	if #candidates == 1 then
 		local candidate = candidates[1]
-		local start_line = candidate.start_line
-		local end_line = candidate.end_line
-		local actual_block_size = end_line - start_line + 1
 
-		local similarity = 0
-		local lines_to_check = math.min(search_block_size - 2, actual_block_size - 2)
-
-		if lines_to_check > 0 then
-			for j = 1, math.min(search_block_size - 2, actual_block_size - 2) do
-				local original_line = trim(original_lines[start_line + j])
-				local search_line = trim(search_lines[j + 1])
-				local max_len = math.max(#original_line, #search_line)
-
-				if max_len > 0 then
-					local distance = levenshtein(original_line, search_line)
-					similarity = similarity + (1 - distance / max_len) / lines_to_check
-				end
-
-				if similarity >= SINGLE_CANDIDATE_SIMILARITY_THRESHOLD then
-					break
-				end
-			end
-		else
-			similarity = 1.0
-		end
+		local similarity = calculate_block_similarity(
+			original_lines,
+			search_lines,
+			candidate.start_line,
+			candidate.end_line
+		)
 
 		if similarity >= SINGLE_CANDIDATE_SIMILARITY_THRESHOLD then
-			local match_start_index = 0
-			for k = 1, start_line - 1 do
-				match_start_index = match_start_index + #original_lines[k] + 1
-			end
-
-			local match_end_index = match_start_index
-			for k = start_line, end_line do
-				match_end_index = match_end_index + #original_lines[k]
-				if k < end_line then
-					match_end_index = match_end_index + 1
-				end
-			end
-
-			table.insert(results, content:sub(match_start_index + 1, match_end_index))
+			table.insert(results, extract_line_range(original_lines, content, candidate.start_line, candidate.end_line))
 		end
 
 		return results
@@ -183,28 +186,12 @@ local function block_anchor_replacer(content, find)
 	local max_similarity = -1
 
 	for _, candidate in ipairs(candidates) do
-		local start_line = candidate.start_line
-		local end_line = candidate.end_line
-		local actual_block_size = end_line - start_line + 1
-
-		local similarity = 0
-		local lines_to_check = math.min(search_block_size - 2, actual_block_size - 2)
-
-		if lines_to_check > 0 then
-			for j = 1, math.min(search_block_size - 2, actual_block_size - 2) do
-				local original_line = trim(original_lines[start_line + j])
-				local search_line = trim(search_lines[j + 1])
-				local max_len = math.max(#original_line, #search_line)
-
-				if max_len > 0 then
-					local distance = levenshtein(original_line, search_line)
-					similarity = similarity + (1 - distance / max_len)
-				end
-			end
-			similarity = similarity / lines_to_check
-		else
-			similarity = 1.0
-		end
+		local similarity = calculate_block_similarity(
+			original_lines,
+			search_lines,
+			candidate.start_line,
+			candidate.end_line
+		)
 
 		if similarity > max_similarity then
 			max_similarity = similarity
@@ -213,23 +200,7 @@ local function block_anchor_replacer(content, find)
 	end
 
 	if max_similarity >= MULTIPLE_CANDIDATES_SIMILARITY_THRESHOLD and best_match then
-		local start_line = best_match.start_line
-		local end_line = best_match.end_line
-
-		local match_start_index = 0
-		for k = 1, start_line - 1 do
-			match_start_index = match_start_index + #original_lines[k] + 1
-		end
-
-		local match_end_index = match_start_index
-		for k = start_line, end_line do
-			match_end_index = match_end_index + #original_lines[k]
-			if k < end_line then
-				match_end_index = match_end_index + 1
-			end
-		end
-
-		table.insert(results, content:sub(match_start_index + 1, match_end_index))
+		table.insert(results, extract_line_range(original_lines, content, best_match.start_line, best_match.end_line))
 	end
 
 	return results
@@ -256,7 +227,7 @@ end
 -- Main replace function: tries multiple strategies
 function M.replace(content, old_string, new_string, replace_all)
 	if old_string == new_string then
-		return nil, "oldString and newString must be different"
+		return nil, "old_string and new_string must be different"
 	end
 
 	replace_all = replace_all or false
@@ -286,26 +257,22 @@ function M.replace(content, old_string, new_string, replace_all)
 
 				-- Check for multiple occurrences
 				local last_index = content:find(search, index + 1, true)
-				if last_index then
-					-- Multiple matches found, skip this one
-					goto continue
+				if not last_index then
+					-- Single unique match, perform replacement
+					local result = content:sub(1, index - 1) .. new_string .. content:sub(index + #search)
+					return result, nil
 				end
-
-				-- Single unique match, perform replacement
-				local result = content:sub(1, index - 1) .. new_string .. content:sub(index + #search)
-				return result, nil
+				-- Multiple matches found, skip this one
 			end
-
-			::continue::
 		end
 	end
 
 	if not_found then
-		return nil, "oldString not found in content"
+		return nil, "old_string not found in content"
 	end
 
 	return nil,
-		"Found multiple matches for oldString. Provide more surrounding lines in oldString to identify the correct match."
+		"Found multiple matches for old_string. Provide more surrounding lines in old_string to identify the correct match."
 end
 
 return M
