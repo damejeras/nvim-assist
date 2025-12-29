@@ -47,26 +47,25 @@ local function request(port, method, path, body, allow_empty)
 	elseif method == "POST" then
 		response = curl_lib.post(url, opts)
 	else
-		log.error(string.format("Unsupported HTTP method: %s", method))
-		return nil
+		return nil, string.format("Unsupported HTTP method: %s", method)
 	end
 
 	-- Check for curl errors
 	if response.exit ~= 0 then
-		log.error(string.format("HTTP request failed with exit code %d", response.exit))
+		local err = string.format("HTTP request failed with exit code %d", response.exit)
 		if response.body then
-			log.error(string.format("Response: %s", response.body:sub(1, 500)))
+			log.debug(string.format("Response: %s", response.body:sub(1, 500)))
 		end
-		return nil
+		return nil, err
 	end
 
 	-- Check HTTP status code
 	if response.status < 200 or response.status >= 300 then
-		log.error(string.format("HTTP error %d", response.status))
+		local err = string.format("HTTP error %d", response.status)
 		if response.body then
-			log.error(string.format("Response: %s", response.body:sub(1, 500)))
+			log.debug(string.format("Response: %s", response.body:sub(1, 500)))
 		end
-		return nil
+		return nil, err
 	end
 
 	log.debug(string.format("HTTP Status: %d", response.status))
@@ -78,16 +77,14 @@ local function request(port, method, path, body, allow_empty)
 			log.debug("Empty response (OK for async endpoint)")
 			return true
 		else
-			log.error("Empty response from OpenCode server")
-			return nil
+			return nil, "Empty response from OpenCode server"
 		end
 	end
 
 	-- Parse JSON response
 	local ok, decoded = pcall(vim.fn.json_decode, response_body)
 	if not ok then
-		log.error(string.format("Failed to parse JSON response: %s", response_body:sub(1, 500)))
-		return nil
+		return nil, string.format("Failed to parse JSON response: %s", response_body:sub(1, 500))
 	end
 
 	log.debug(string.format("Response: %s", vim.fn.json_encode(decoded):sub(1, 500)))
@@ -214,14 +211,17 @@ end
 
 -- Create an OpenCode session
 function M.create_session(port, cwd, agent_name)
-	log.info("Creating OpenCode session with agent: " .. agent_name)
-	local session = request(port, "POST", "/session?directory=" .. url_encode(cwd), {
+	log.debug("Creating OpenCode session with agent: " .. agent_name)
+	local session, err = request(port, "POST", "/session?directory=" .. url_encode(cwd), {
 		agentName = agent_name,
 	})
 
-	if not session or not session.id then
-		log.error("Failed to create OpenCode session")
-		return nil
+	if not session then
+		return nil, "Failed to create OpenCode session" .. (err and (": " .. err) or "")
+	end
+
+	if not session.id then
+		return nil, "OpenCode session created without ID"
 	end
 
 	log.info(string.format("OpenCode session created: %s (agent: %s)", session.id, agent_name))
@@ -246,14 +246,16 @@ function M.delete_session(port, session_id)
 
 	-- Check for curl errors
 	if response.exit ~= 0 then
-		log.error(string.format("Failed to delete session %s (exit code %d)", session_id, response.exit))
-		return false
+		local err = string.format("Failed to delete session %s (exit code %d)", session_id, response.exit)
+		log.error(err)
+		return nil, err
 	end
 
 	-- Check HTTP status code
 	if response.status < 200 or response.status >= 300 then
-		log.error(string.format("Failed to delete session %s (HTTP %d)", session_id, response.status))
-		return false
+		local err = string.format("Failed to delete session %s (HTTP %d)", session_id, response.status)
+		log.error(err)
+		return nil, err
 	end
 
 	log.info(string.format("Session %s deleted successfully", session_id))
@@ -262,11 +264,11 @@ end
 
 -- Send a prompt to an OpenCode session asynchronously
 function M.send_prompt_async(port, session_id, cwd, prompt_text, provider_id, model_id)
-	log.info("Sending prompt to OpenCode session " .. session_id)
+	log.debug("Sending prompt to OpenCode session " .. session_id)
 	log.debug(string.format("Model: %s/%s", provider_id, model_id))
 	log.debug("Prompt: " .. prompt_text:gsub("\n", " "):sub(1, 200) .. "...")
 
-	local response = request(
+	local response, err = request(
 		port,
 		"POST",
 		string.format("/session/%s/prompt_async?directory=%s", session_id, url_encode(cwd)),
@@ -289,8 +291,7 @@ function M.send_prompt_async(port, session_id, cwd, prompt_text, provider_id, mo
 		log.info("Prompt sent successfully")
 		return true
 	else
-		log.error("Failed to send prompt to OpenCode")
-		return false
+		return nil, "Failed to send prompt to OpenCode" .. (err and (": " .. err) or "")
 	end
 end
 

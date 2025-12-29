@@ -28,9 +28,11 @@ local function run_assist(bufnr, filepath, start_line, end_line, content, user_p
 		local cwd = vim.fn.getcwd()
 
 		-- Create OpenCode session with configured agent
-		local session = opencode.create_session(port, cwd, M.config.opencode.agent)
+		local session, err = opencode.create_session(port, cwd, M.config.opencode.agent)
 		if not session then
-			return vim.notify("Failed to create OpenCode session", vim.log.levels.ERROR)
+			local error_msg = "Failed to create OpenCode session" .. (err and (": " .. err) or "")
+			log.error(error_msg)
+			return vim.notify(error_msg, vim.log.levels.ERROR)
 		end
 
 		-- Create tracked virtual line above the selection
@@ -58,7 +60,7 @@ local function run_assist(bufnr, filepath, start_line, end_line, content, user_p
 		})
 
 		-- Send prompt asynchronously
-		local success = opencode.send_prompt_async(
+		local success, err = opencode.send_prompt_async(
 			port,
 			session.id,
 			cwd,
@@ -71,6 +73,9 @@ local function run_assist(bufnr, filepath, start_line, end_line, content, user_p
 			timer:stop()
 			timer:close()
 			ui.clear_virtual_text(bufnr, extmark_id)
+			local error_msg = "Failed to send prompt" .. (err and (": " .. err) or "")
+			log.error(error_msg)
+			vim.notify(error_msg, vim.log.levels.ERROR)
 			return
 		end
 
@@ -100,7 +105,10 @@ local function run_assist(bufnr, filepath, start_line, end_line, content, user_p
 
 					-- Auto-delete idle sessions if configured
 					if M.config.opencode.auto_delete_idle_sessions then
-						opencode.delete_session(port, session.id)
+						local ok, err = opencode.delete_session(port, session.id)
+						if not ok then
+							log.warn("Failed to delete session: " .. (err or "unknown error"))
+						end
 					end
 				end
 			end

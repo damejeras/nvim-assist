@@ -1,4 +1,5 @@
 local M = {}
+local log = require("nvim-assist.log")
 local replace = require("nvim-assist.replace")
 local ui = require("nvim-assist.ui")
 
