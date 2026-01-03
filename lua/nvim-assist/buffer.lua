@@ -2,7 +2,30 @@ local M = {}
 local replace = require("nvim-assist.replace")
 local ui = require("nvim-assist.ui")
 
--- Validate buffer exists and is loaded
+---@class ReplaceData
+---@field bufnr? number Buffer number (defaults to current buffer)
+---@field old_string string Text to find and replace
+---@field new_string string Replacement text
+---@field replace_all? boolean Replace all occurrences (default: false)
+
+---@class ReplaceResult
+---@field success boolean Whether replacement succeeded
+---@field error? string Error message if failed
+---@field message? string Success message if succeeded
+
+---@class BufferInfo
+---@field bufnr number Buffer number
+---@field content string Full buffer content as string
+---@field filepath string Full path to the buffer file
+
+---@class BufferMetadata
+---@field bufnr number Buffer number
+---@field filepath string Full path to the buffer file
+
+---Validate buffer exists and is loaded
+---@param bufnr number Buffer number to validate
+---@return number|nil bufnr Valid buffer number on success
+---@return string|nil error Error message if invalid
 local function validate_buffer(bufnr)
 	if not vim.api.nvim_buf_is_valid(bufnr) then
 		return nil, "Buffer " .. bufnr .. " is not valid"
@@ -15,7 +38,10 @@ local function validate_buffer(bufnr)
 	return bufnr
 end
 
--- Get a specific buffer's content and metadata
+---Get buffer content and metadata
+---@param bufnr? number Buffer number (defaults to current buffer)
+---@return BufferInfo|nil # Buffer info on success
+---@return string|nil error Error message if buffer invalid
 function M.get_buffer_content(bufnr)
 	bufnr = bufnr or vim.api.nvim_get_current_buf()
 
@@ -33,7 +59,9 @@ function M.get_buffer_content(bufnr)
 	}
 end
 
--- List all open buffers with their metadata
+---List all open normal file buffers
+---Excludes special buffers (help, quickfix, etc.)
+---@return BufferMetadata[] # Array of buffer metadata objects
 function M.list_buffers()
 	local buffers = {}
 	local bufs = vim.api.nvim_list_bufs()
@@ -57,7 +85,11 @@ function M.list_buffers()
 	return buffers
 end
 
--- Replace text in buffer using smart matching strategies
+---Replace text in buffer using smart matching strategies
+---Tries multiple strategies: exact match, line-trimmed, block anchor, multi-occurrence
+---Preserves cursor position across all windows showing the buffer
+---@param replace_data ReplaceData Replacement parameters
+---@return ReplaceResult # Result object with success/error information
 function M.replace_text(replace_data)
 	local bufnr = replace_data.bufnr or vim.api.nvim_get_current_buf()
 	local old_string = replace_data.old_string

@@ -1,18 +1,44 @@
 local M = {}
 
+---@alias Port number TCP port number
+---@alias JobId number Job identifier for async tasks
+
+---@class OpenCodeSession
+---@field id string Session identifier
+---@field directory? string Working directory for the session
+
+---@class ModelInfo
+---@field providerID string AI provider identifier
+---@field modelID string Model identifier
+
+---@class OpenCodeEventPayload
+---@field type string Event type (e.g., "message.part.updated", "session.idle")
+---@field properties? table Event-specific properties
+
+---@class OpenCodeEvent
+---@field payload OpenCodeEventPayload Event payload data
+
 local uv = vim.loop
+
+---@type userdata? # UV process handle for OpenCode server
 local server_handle = nil
+
+---@type Port? # Port number the OpenCode server is running on
 local server_port = nil
+
 local log = require("nvim-assist.log")
 
--- Constants
+---Constants for logging and HTTP
 local LOG_TRUNCATE_LENGTH = 500
 local LOG_PROMPT_LENGTH = 200
 local HTTP_SUCCESS_MIN = 200
 local HTTP_SUCCESS_MAX = 300
 
--- Lazy load plenary curl
+---@type table? # Lazy-loaded plenary.curl module
 local curl = nil
+
+---Get plenary.curl module, lazy loading if needed
+---@return table # plenary.curl module
 local function get_curl()
 	if not curl then
 		local ok, plenary_curl = pcall(require, "plenary.curl")
@@ -24,7 +50,10 @@ local function get_curl()
 	return curl
 end
 
--- Helper to format error messages with optional detail
+---Format error message with optional detail
+---@param base_msg string Base error message
+---@param err? string Optional error detail
+---@return string # Formatted error message
 function M.format_error(base_msg, err)
 	if err then
 		return base_msg .. ": " .. err
@@ -32,15 +61,24 @@ function M.format_error(base_msg, err)
 	return base_msg
 end
 
--- Local alias for internal use
+---Local alias for internal use
 local format_error = M.format_error
 
--- Helper to check if HTTP status is successful
+---Check if HTTP status code indicates success
+---@param status number HTTP status code
+---@return boolean # True if status is in 2xx range
 local function is_http_success(status)
 	return status >= HTTP_SUCCESS_MIN and status < HTTP_SUCCESS_MAX
 end
 
--- Make HTTP request to OpenCode server
+---Make HTTP request to OpenCode server
+---@param port Port Server port number
+---@param method string HTTP method ("GET" or "POST")
+---@param path string Request path (e.g., "/session")
+---@param body? table Request body (will be JSON encoded)
+---@param allow_empty? boolean Allow empty response (for async endpoints)
+---@return table|boolean|nil response Decoded JSON response or true if empty allowed
+---@return string|nil error Error message if request failed
 local function request(port, method, path, body, allow_empty)
 	local url = string.format("http://localhost:%d%s", port, path)
 	log.debug(string.format("HTTP %s: %s", method, url))
@@ -115,7 +153,9 @@ local function request(port, method, path, body, allow_empty)
 	return decoded
 end
 
--- Find an available port by starting server without -p flag
+---Start OpenCode server and find available port
+---Server starts in background and calls callback with port when ready
+---@param callback fun(port: Port|nil) Called with port number or nil on failure
 local function start_opencode_server(callback)
 	if server_handle then
 		log.info("OpenCode server already running on port " .. server_port)
@@ -205,10 +245,14 @@ local function start_opencode_server(callback)
 	stdout:read_start(create_port_reader("stdout"))
 end
 
+---Start OpenCode server
+---@param callback fun(port: Port|nil) Called with port number when ready
 function M.start(callback)
 	start_opencode_server(callback)
 end
 
+---Stop OpenCode server gracefully
+---Sends SIGTERM to server process if running
 function M.stop()
 	if server_handle then
 		log.info("Stopping OpenCode server (port " .. (server_port or "unknown") .. ")")
@@ -218,22 +262,32 @@ function M.stop()
 	end
 end
 
+---Get current OpenCode server port
+---@return Port|nil # Port number if server running, nil otherwise
 function M.get_port()
 	return server_port
 end
 
+---Check if OpenCode server is running
+---@return boolean # True if server process is active
 function M.is_running()
 	return server_handle ~= nil
 end
 
--- URL encode helper for query parameters
+---URL encode string for query parameters
+---@param str string String to encode
+---@return string # URL-encoded string
 local function url_encode(str)
 	return string.gsub(str, "([^%w%-%.%_%~%/])", function(c)
 		return string.format("%%%02X", string.byte(c))
 	end)
 end
 
--- Create an OpenCode session
+---Create an OpenCode session
+---@param port Port Server port number
+---@param cwd string Working directory for session
+---@return OpenCodeSession|nil session Session object on success
+---@return string|nil error Error message on failure
 function M.create_session(port, cwd)
 	log.debug("Creating OpenCode session")
 	local session, err = request(port, "POST", "/session?directory=" .. url_encode(cwd), vim.empty_dict())
@@ -250,7 +304,11 @@ function M.create_session(port, cwd)
 	return session
 end
 
--- Delete an OpenCode session
+---Delete an OpenCode session
+---@param port Port Server port number
+---@param session_id string Session identifier to delete
+---@return boolean|nil success True on success
+---@return string|nil error Error message on failure
 function M.delete_session(port, session_id)
 	log.info("Deleting OpenCode session: " .. session_id)
 
@@ -284,8 +342,16 @@ function M.delete_session(port, session_id)
 	return true
 end
 
--- Send a prompt to an OpenCode session asynchronously
--- provider_id, model_id, and agent_name are optional - if not provided, uses defaults
+---Send prompt to OpenCode session asynchronously
+---@param port Port Server port number
+---@param session_id string Session identifier
+---@param cwd string Working directory
+---@param prompt_text string Prompt to send to AI
+---@param provider_id? string AI provider ID (optional, uses default if nil)
+---@param model_id? string Model ID (optional, uses default if nil)
+---@param agent_name? string Agent name (optional)
+---@return boolean|nil success True on success
+---@return string|nil error Error message on failure
 function M.send_prompt_async(port, session_id, cwd, prompt_text, provider_id, model_id, agent_name)
 	log.debug("Sending prompt to OpenCode session " .. session_id)
 	if agent_name then
@@ -337,9 +403,12 @@ function M.send_prompt_async(port, session_id, cwd, prompt_text, provider_id, mo
 	end
 end
 
--- Subscribe to OpenCode events for a session
--- Calls on_event callback for each event received
--- Returns the job ID
+---Subscribe to OpenCode event stream for a session
+---Calls on_event callback for each received event using Server-Sent Events (SSE)
+---@param port Port Server port number
+---@param session_id string Session identifier to monitor
+---@param on_event fun(event: OpenCodeEvent, session_id: string) Callback for each event
+---@return JobId # Job ID for the curl process
 function M.subscribe_to_events(port, session_id, on_event)
 	log.debug("Subscribing to OpenCode events for session " .. session_id)
 

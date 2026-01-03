@@ -1,10 +1,18 @@
 local M = {}
 
--- Similarity thresholds for block anchor fallback matching
+---@class BlockCandidate
+---@field start_line number Starting line number (1-indexed)
+---@field end_line number Ending line number (1-indexed)
+
+---Similarity thresholds for block anchor fallback matching
 local SINGLE_CANDIDATE_SIMILARITY_THRESHOLD = 0.0
 local MULTIPLE_CANDIDATES_SIMILARITY_THRESHOLD = 0.3
 
--- Levenshtein distance algorithm implementation
+---Calculate Levenshtein distance between two strings
+---Uses dynamic programming matrix approach for edit distance calculation
+---@param a string First string
+---@param b string Second string
+---@return number # Edit distance between the two strings
 local function levenshtein(a, b)
 	if a == "" or b == "" then
 		return math.max(#a, #b)
@@ -32,17 +40,27 @@ local function levenshtein(a, b)
 	return matrix[#a][#b]
 end
 
--- Trim whitespace from string
+---Remove leading and trailing whitespace from string
+---@param s string String to trim
+---@return string # Trimmed string
 local function trim(s)
 	return s:match("^%s*(.-)%s*$")
 end
 
--- Split content into lines
+---Split text into array of lines
+---@param text string Text to split
+---@return string[] # Array of lines
 local function split_into_lines(text)
 	return vim.split(text, "\n", { plain = true })
 end
 
--- Extract text content for a range of lines
+---Extract text content for a specific line range
+---Calculates byte offsets and extracts substring from content
+---@param original_lines string[] Array of all lines in content
+---@param content string Full content string
+---@param start_line number Starting line (1-indexed)
+---@param end_line number Ending line (1-indexed, inclusive)
+---@return string # Extracted text segment
 local function extract_line_range(original_lines, content, start_line, end_line)
 	local match_start_index = 0
 	for k = 1, start_line - 1 do
@@ -60,7 +78,13 @@ local function extract_line_range(original_lines, content, start_line, end_line)
 	return content:sub(match_start_index + 1, match_end_index)
 end
 
--- Calculate similarity between a block in original_lines and search_lines
+---Calculate similarity score between a block and search pattern
+---Uses Levenshtein distance on interior lines (excludes first/last anchor lines)
+---@param original_lines string[] Lines from original content
+---@param search_lines string[] Lines from search pattern
+---@param start_line number Block start line (1-indexed)
+---@param end_line number Block end line (1-indexed)
+---@return number # Similarity score between 0.0 and 1.0
 local function calculate_block_similarity(original_lines, search_lines, start_line, end_line)
 	local search_block_size = #search_lines
 	local actual_block_size = end_line - start_line + 1
@@ -85,14 +109,19 @@ local function calculate_block_similarity(original_lines, search_lines, start_li
 	return similarity / lines_to_check
 end
 
--- Remove trailing empty line from lines array if present
+---Remove trailing empty line from lines array if present
+---Modifies the array in place
+---@param lines string[] Array of lines
 local function remove_trailing_empty_line(lines)
 	if lines[#lines] == "" then
 		table.remove(lines)
 	end
 end
 
--- Simple exact match replacer
+---Simple exact string match replacer
+---@param content string Content to search in
+---@param find string String to find
+---@return string[] # Array of matches (empty if none, single element if found)
 local function simple_replacer(content, find)
 	if content:find(find, 1, true) then
 		return { find }
@@ -100,7 +129,11 @@ local function simple_replacer(content, find)
 	return {}
 end
 
--- Line-trimmed replacer: match lines when trimmed whitespace is equal
+---Line-trimmed replacer: match when trimmed lines are equal
+---Ignores leading/trailing whitespace on each line
+---@param content string Content to search in
+---@param find string Multi-line string to find
+---@return string[] # Array of matched text segments
 local function line_trimmed_replacer(content, find)
 	local results = {}
 	local original_lines = split_into_lines(content)
@@ -130,7 +163,11 @@ local function line_trimmed_replacer(content, find)
 	return results
 end
 
--- Block anchor replacer: match blocks using first and last lines as anchors
+---Block anchor replacer: match blocks using first and last lines as anchors
+---Uses similarity scoring for interior lines to handle minor variations
+---@param content string Content to search in
+---@param find string Multi-line block pattern with anchor lines
+---@return string[] # Array of matched blocks
 local function block_anchor_replacer(content, find)
 	local results = {}
 	local original_lines = split_into_lines(content)
@@ -206,7 +243,10 @@ local function block_anchor_replacer(content, find)
 	return results
 end
 
--- Multi-occurrence replacer: find all occurrences
+---Multi-occurrence replacer: find all occurrences
+---@param content string Content to search in
+---@param find string String to find all occurrences of
+---@return string[] # Array of all matched occurrences
 local function multi_occurrence_replacer(content, find)
 	local results = {}
 	local start_index = 1
@@ -224,7 +264,15 @@ local function multi_occurrence_replacer(content, find)
 	return results
 end
 
--- Main replace function: tries multiple strategies
+---Replace text using multiple fallback strategies
+---Tries strategies in order: exact, line-trimmed, block anchor, multi-occurrence
+---Returns error if old_string not found or multiple ambiguous matches exist
+---@param content string Full content to search and replace in
+---@param old_string string Text to find
+---@param new_string string Replacement text
+---@param replace_all? boolean Replace all occurrences (default: false)
+---@return string|nil new_content Replaced content on success
+---@return string|nil error Error message on failure
 function M.replace(content, old_string, new_string, replace_all)
 	if old_string == new_string then
 		return nil, "old_string and new_string must be different"

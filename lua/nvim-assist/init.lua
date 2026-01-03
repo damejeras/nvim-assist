@@ -1,10 +1,22 @@
 local M = {}
+
+---@class OpenCodeConfig
+---@field provider string AI provider (e.g., "openrouter")
+---@field model string Model identifier (e.g., "moonshotai/kimi-k2")
+---@field auto_delete_idle_sessions boolean Auto-delete sessions when idle
+
+---@class NvimAssistConfig
+---@field opencode OpenCodeConfig OpenCode server configuration
+
 local opencode = require("nvim-assist.opencode")
 local log = require("nvim-assist.log")
 local ui = require("nvim-assist.ui")
 local prompts = require("nvim-assist.prompts")
 
--- Helper to format error messages with optional detail
+---Format error message with optional detail
+---@param base_msg string Base error message
+---@param err? string Optional error detail
+---@return string # Formatted error message
 local function format_error(base_msg, err)
 	if err then
 		return base_msg .. ": " .. err
@@ -12,11 +24,11 @@ local function format_error(base_msg, err)
 	return base_msg
 end
 
--- Constants
+---Constants
 local LOG_CONTENT_LENGTH = 100
 local AGENT_NAME = "nvim-assist"
 
--- Default configuration
+---@type NvimAssistConfig # Default configuration
 M.config = {
 	opencode = {
 		provider = "openrouter",
@@ -25,7 +37,14 @@ M.config = {
 	},
 }
 
--- Internal function that actually runs the assist
+---Run the assist operation with OpenCode
+---Internal implementation handling session creation, prompt sending, and event monitoring
+---@param bufnr number Buffer number
+---@param filepath string File path
+---@param start_line number Start line (0-indexed)
+---@param end_line number End line (0-indexed, inclusive)
+---@param content string Selected content
+---@param user_prompt string User's instruction
 local function run_assist(bufnr, filepath, start_line, end_line, content, user_prompt)
 	-- Ensure OpenCode server is running
 	opencode.start(function(port)
@@ -128,9 +147,11 @@ local function run_assist(bufnr, filepath, start_line, end_line, content, user_p
 	end)
 end
 
--- Main assist function
--- Works with visual selection (via range) or entire buffer
--- line1, line2: optional range from command (1-indexed)
+---Main assist function
+---Handles visual selection or entire buffer with user prompt
+---@param custom_prompt? string Optional prompt (will prompt user if nil)
+---@param line1? number Start line from command range (1-indexed)
+---@param line2? number End line from command range (1-indexed)
 local function assist(custom_prompt, line1, line2)
 	log.info("Assist command invoked")
 
@@ -186,7 +207,9 @@ local function assist(custom_prompt, line1, line2)
 	end
 end
 
--- Setup function
+---Setup nvim-assist plugin
+---Initializes configuration, logging, commands, and autocommands
+---@param opts? NvimAssistConfig User configuration (merged with defaults)
 function M.setup(opts)
 	opts = opts or {}
 

@@ -1,9 +1,12 @@
 local M = {}
 
+---@type file*? # File handle for log file
 local log_file = nil
+
+---@type string? # Absolute path to log file
 local log_path = nil
 
--- Log levels
+---Log levels for filtering messages
 local LOG_LEVELS = {
 	DEBUG = 1,
 	INFO = 2,
@@ -11,10 +14,12 @@ local LOG_LEVELS = {
 	ERROR = 4,
 }
 
--- Current log level (can be configured)
+---@type number # Current minimum log level (1=DEBUG, 2=INFO, 3=WARN, 4=ERROR)
 local current_level = LOG_LEVELS.DEBUG
 
--- Initialize the logger with a log file path
+---Initialize the logger with a log file path
+---Creates log directory if it doesn't exist and opens file for appending
+---@param path string Absolute path to log file
 function M.init(path)
 	log_path = path
 
@@ -29,7 +34,9 @@ function M.init(path)
 	end
 end
 
--- Internal function to write log message
+---Write log message with timestamp and level
+---@param level_name string Log level name for formatting (e.g., "DEBUG", "INFO")
+---@param msg string Message to write
 local function write_log(level_name, msg)
 	if not log_file then
 		return
@@ -41,35 +48,44 @@ local function write_log(level_name, msg)
 	log_file:flush()
 end
 
--- Debug level logging
+---Write a debug-level log message
+---Only written if current log level is DEBUG or lower
+---@param msg string Message to log
 function M.debug(msg)
 	if LOG_LEVELS.DEBUG >= current_level then
 		write_log("DEBUG", msg)
 	end
 end
 
--- Info level logging
+---Write an info-level log message
+---Only written if current log level is INFO or lower
+---@param msg string Message to log
 function M.info(msg)
 	if LOG_LEVELS.INFO >= current_level then
 		write_log("INFO", msg)
 	end
 end
 
--- Warning level logging
+---Write a warning-level log message
+---Only written if current log level is WARN or lower
+---@param msg string Message to log
 function M.warn(msg)
 	if LOG_LEVELS.WARN >= current_level then
 		write_log("WARN", msg)
 	end
 end
 
--- Error level logging
+---Write an error-level log message
+---Only written if current log level is ERROR or lower
+---@param msg string Message to log
 function M.error(msg)
 	if LOG_LEVELS.ERROR >= current_level then
 		write_log("ERROR", msg)
 	end
 end
 
--- Set the minimum log level
+---Set the minimum log level for filtering
+---@param level string|number Log level name ("DEBUG", "INFO", "WARN", "ERROR") or numeric value (1-4)
 function M.set_level(level)
 	if type(level) == "string" then
 		current_level = LOG_LEVELS[level:upper()] or LOG_LEVELS.DEBUG
@@ -78,7 +94,8 @@ function M.set_level(level)
 	end
 end
 
--- Close the log file
+---Close the log file
+---Flushes and closes the file handle
 function M.close()
 	if log_file then
 		log_file:close()
@@ -86,12 +103,14 @@ function M.close()
 	end
 end
 
--- Get the current log path
+---Get the current log file path
+---@return string|nil # Absolute path to log file, or nil if not initialized
 function M.get_path()
 	return log_path
 end
 
--- Open log file in a split with auto-reload
+---Open log file in a split with auto-reload
+---Creates a split window that auto-refreshes and jumps to end on updates
 function M.tail_log()
 	if not log_path then
 		vim.notify("Log file not initialized", vim.log.levels.WARN)

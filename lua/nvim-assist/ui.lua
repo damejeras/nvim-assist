@@ -1,34 +1,54 @@
 local M = {}
 
--- Namespace for virtual text
+---@alias ExtmarkId number Extmark identifier
+---@alias TimerId userdata UV timer handle
+
+---@class TrackedExtmark
+---@field bufnr number Buffer number
+---@field target_line number Target line number for repositioning
+
+---@type number # Namespace ID for virtual text
 local ns_id = vim.api.nvim_create_namespace("nvim-assist")
 
--- Spinner frames for loading animation
+---Spinner frames for loading animation
 local spinner_frames = { "⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏" }
 local SPINNER_UPDATE_INTERVAL_MS = 100
 
--- Helper to check if buffer is valid and loaded
+---@type table<ExtmarkId, TrackedExtmark> # Map of extmark IDs to tracking info
+local tracked_extmarks = {}
+
+---Check if buffer is valid and loaded
+---@param bufnr number Buffer number to check
+---@return boolean # True if buffer is valid and loaded
 local function is_buffer_valid(bufnr)
 	return vim.api.nvim_buf_is_valid(bufnr) and vim.api.nvim_buf_is_loaded(bufnr)
 end
 
--- Safe extmark operations (pcall wrappers)
+---Safely get extmark position without errors
+---@param bufnr number Buffer number
+---@param extmark_id ExtmarkId Extmark identifier
+---@param opts? table Options for nvim_buf_get_extmark_by_id
+---@return number[]|nil # Position [row, col] or details, nil if failed
 local function safe_get_extmark(bufnr, extmark_id, opts)
 	local ok, result = pcall(vim.api.nvim_buf_get_extmark_by_id, bufnr, ns_id, extmark_id, opts or {})
 	return ok and result or nil
 end
 
+---Safely set extmark without raising errors
+---@param bufnr number Buffer number
+---@param line number Line number (0-indexed)
+---@param col number Column number (0-indexed)
+---@param opts table Extmark options
 local function safe_set_extmark(bufnr, line, col, opts)
 	pcall(vim.api.nvim_buf_set_extmark, bufnr, ns_id, line, col, opts)
 end
 
+---Safely delete extmark without raising errors
+---@param bufnr number Buffer number
+---@param extmark_id ExtmarkId Extmark identifier
 local function safe_del_extmark(bufnr, extmark_id)
 	pcall(vim.api.nvim_buf_del_extmark, bufnr, ns_id, extmark_id)
 end
-
--- Store target line for tracked extmarks
--- This allows us to reposition them after programmatic buffer changes
-local tracked_extmarks = {}
 
 -- Set up autocmd to clean up extmarks when buffers are deleted
 local cleanup_group = vim.api.nvim_create_augroup("NvimAssistCleanup", { clear = true })
@@ -45,15 +65,22 @@ vim.api.nvim_create_autocmd({ "BufDelete", "BufWipeout" }, {
 	end,
 })
 
--- Helper to get the indentation of a line
+---Get indentation string for a line
+---@param bufnr number Buffer number
+---@param line number Line number (0-indexed)
+---@return string # Leading whitespace from the line
 local function get_line_indent(bufnr, line)
 	local line_text = vim.api.nvim_buf_get_lines(bufnr, line, line + 1, false)[1] or ""
 	local indent = line_text:match("^%s*") or ""
 	return indent
 end
 
--- Helper to create a tracked extmark with virtual line
--- Returns the extmark ID which can be used to update or clear it later
+---Create tracked virtual text above a line
+---Returns extmark ID for later updates or clearing
+---@param bufnr number Buffer number
+---@param line number Line number (0-indexed) to place virtual text above
+---@param text string Initial text to display
+---@return ExtmarkId # Extmark identifier for updates/clearing
 function M.create_tracked_virtual_text(bufnr, line, text)
 	local indent = get_line_indent(bufnr, line)
 	local extmark_id = vim.api.nvim_buf_set_extmark(bufnr, ns_id, line, 0, {
@@ -67,7 +94,11 @@ function M.create_tracked_virtual_text(bufnr, line, text)
 	return extmark_id
 end
 
--- Helper to update virtual line using extmark ID
+---Update virtual text content and spinner
+---@param bufnr number Buffer number
+---@param extmark_id ExtmarkId Extmark to update
+---@param text string New text content
+---@param spinner_index? number Spinner frame index (nil to hide spinner)
 function M.update_virtual_text(bufnr, extmark_id, text, spinner_index)
 	-- Check if buffer is valid and loaded
 	if not is_buffer_valid(bufnr) then
@@ -99,14 +130,16 @@ function M.update_virtual_text(bufnr, extmark_id, text, spinner_index)
 	})
 end
 
--- Helper to clear virtual text using extmark ID
+---Clear virtual text by extmark ID
+---@param bufnr number Buffer number
+---@param extmark_id ExtmarkId Extmark to remove
 function M.clear_virtual_text(bufnr, extmark_id)
 	safe_del_extmark(bufnr, extmark_id)
 	tracked_extmarks[extmark_id] = nil
 end
 
--- Update target lines for tracked extmarks based on their current positions
--- Call this BEFORE programmatic buffer replacements to capture any manual edits
+---Update tracked target lines from current extmark positions
+---Call BEFORE programmatic buffer replacements to capture manual edits
 function M.update_tracked_target_lines()
 	for extmark_id, tracked in pairs(tracked_extmarks) do
 		local bufnr = tracked.bufnr
@@ -128,8 +161,8 @@ function M.update_tracked_target_lines()
 	end
 end
 
--- Reposition tracked extmarks to their target lines
--- Call this AFTER programmatic buffer replacements to keep extmarks at the intended location
+---Reposition tracked extmarks to their target lines
+---Call AFTER programmatic buffer replacements to maintain intended positioning
 function M.reposition_tracked_extmarks()
 	for extmark_id, tracked in pairs(tracked_extmarks) do
 		local bufnr = tracked.bufnr
@@ -168,7 +201,11 @@ function M.reposition_tracked_extmarks()
 	end
 end
 
--- Helper to highlight a region
+---Highlight a range of lines in a buffer
+---@param bufnr number Buffer number
+---@param start_line number First line to highlight (0-indexed)
+---@param end_line number Last line to highlight (0-indexed, inclusive)
+---@return ExtmarkId[] # Array of extmark IDs for clearing later
 function M.highlight_region(bufnr, start_line, end_line)
 	local extmarks = {}
 	for line = start_line, end_line do
@@ -187,15 +224,20 @@ function M.highlight_region(bufnr, start_line, end_line)
 	return extmarks
 end
 
--- Helper to clear region highlights
+---Clear region highlights by extmark IDs
+---@param bufnr number Buffer number
+---@param extmarks ExtmarkId[] Array of extmark IDs to remove
 function M.clear_region_highlights(bufnr, extmarks)
 	for _, mark_id in ipairs(extmarks) do
 		safe_del_extmark(bufnr, mark_id)
 	end
 end
 
--- Create a spinner animation that updates virtual text
--- Returns a timer and the initial spinner index
+---Create animated spinner that updates virtual text periodically
+---@param bufnr number Buffer number
+---@param extmark_id ExtmarkId Extmark to animate
+---@param current_text_callback fun(): string Callback to get current text for display
+---@return TimerId # UV timer handle (call timer:stop() and timer:close() to stop animation)
 function M.create_spinner(bufnr, extmark_id, current_text_callback)
 	local spinner_index = 1
 	local timer = vim.loop.new_timer()
