@@ -3,24 +3,17 @@ local M = {}
 -- Build the AI prompt for code modification tasks
 function M.build_code_modification_prompt(params)
 	return string.format(
-		[[Task: %s
+		[[%s
 
-File: %s
-Buffer: %d
+Source buffer: %d (%s)
 
-Current buffer:
-```
-%s
-```
-
-Selected code:
+Code selected:
 ```
 %s
 ```]],
 		params.user_prompt,
-		params.filepath,
 		params.bufnr,
-		params.full_buffer_content,
+		params.filepath,
 		params.code_section
 	)
 end

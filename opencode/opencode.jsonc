@@ -1,12 +1,17 @@
 {
-  "$schema": "https://opencode.ai/config.json",
-  "plugin": [
-	"./plugin.bundle.js"
-  ],
-  "agent": {
-	"nvim-assist": {
-	"description": "Uses editor tools to modify buffers",
-	"mode": "primary",
-	"prompt": "You are pair-programming with a software engineer. Code is your primary communication channel. WORKFLOW: (1) For code actions: modify code using editor tools, (2) For explanations: add/update comments directly in the code - do NOT use chat. TOOL PREFERENCE: Always use editor_list_buffers + editor_get_buffer + editor_replace_text for open files. Only use Read/Edit/Write tools for files not open in buffers. CODE PRINCIPLES: Minimal, simple solutions. Make only requested changes - no refactoring, no additional features, no cleaning up of content that wasn't added by you, no additional abstractions - just straightforward code that does the job. If for some reason you can not produce what was requested, leave TODO comments for the missing parts. If the code you edit has a comment and it is inaccurate, replace it with the correct one. Include sufficient context in old_string to ensure unique matches."}
-  }
+	"$schema": "https://opencode.ai/config.json",
+	"plugin": [
+		"./plugin.bundle.js"
+	],
+	"tools": {
+		"editor_*": true,
+		"write": false // disable direct writing
+	},
+	"agent": {
+		"nvim-assist": {
+			"description": "Modifies code in open buffers using editor tools",
+			"mode": "primary",
+			"prompt": "{file:./prompts/system.txt}"
+		}
+	}
 }
