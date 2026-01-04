@@ -18,10 +18,10 @@ local prompts = require("nvim-assist.prompts")
 ---@param err? string Optional error detail
 ---@return string # Formatted error message
 local function format_error(base_msg, err)
-	if err then
-		return base_msg .. ": " .. err
-	end
-	return base_msg
+    if err then
+        return base_msg .. ": " .. err
+    end
+    return base_msg
 end
 
 ---Constants
@@ -30,11 +30,11 @@ local AGENT_NAME = "nvim-assist"
 
 ---@type NvimAssistConfig # Default configuration
 M.config = {
-	opencode = {
-		provider = "openrouter",
-		model = "moonshotai/kimi-k2",
-		auto_delete_idle_sessions = false, -- Auto-delete sessions when they go idle
-	},
+    opencode = {
+        provider = "openrouter",
+        model = "moonshotai/kimi-k2",
+        auto_delete_idle_sessions = false, -- Auto-delete sessions when they go idle
+    },
 }
 
 ---Run the assist operation with OpenCode
@@ -42,109 +42,126 @@ M.config = {
 ---@param bufnr number Buffer number
 ---@param filepath string File path
 ---@param start_line number Start line (0-indexed)
----@param end_line number End line (0-indexed, inclusive)
 ---@param content string Selected content
 ---@param user_prompt string User's instruction
-local function run_assist(bufnr, filepath, start_line, end_line, content, user_prompt)
-	-- Ensure OpenCode server is running
-	opencode.start(function(port)
-		if not port then
-			log.error("Failed to get OpenCode server port")
-			return vim.notify("Failed to get OpenCode server port", vim.log.levels.ERROR)
-		end
+local function run_assist(bufnr, filepath, start_line, content, user_prompt)
+    -- Ensure OpenCode server is running
+    opencode.start(function(port)
+        if not port then
+            log.error("Failed to get OpenCode server port")
+            return vim.notify(
+                "Failed to get OpenCode server port",
+                vim.log.levels.ERROR
+            )
+        end
 
-		log.info("OpenCode server running on port " .. port)
+        log.info("OpenCode server running on port " .. port)
 
-		local cwd = vim.fn.getcwd()
+        local cwd = vim.fn.getcwd()
 
-		-- Create OpenCode session
-		local session, err = opencode.create_session(port, cwd)
-		if not session then
-			local error_msg = format_error("Failed to create OpenCode session", err)
-			log.error(error_msg)
-			return vim.notify(error_msg, vim.log.levels.ERROR)
-		end
+        -- Create OpenCode session
+        local session, err = opencode.create_session(port, cwd)
+        if not session then
+            local error_msg =
+                format_error("Failed to create OpenCode session", err)
+            log.error(error_msg)
+            return vim.notify(error_msg, vim.log.levels.ERROR)
+        end
 
-		-- Create tracked virtual line above the selection
-		local extmark_id = ui.create_tracked_virtual_text(bufnr, start_line, "Starting implementation...")
+        -- Create tracked virtual line above the selection
+        local extmark_id = ui.create_tracked_virtual_text(
+            bufnr,
+            start_line,
+            "Starting implementation..."
+        )
 
-		-- Track current text for spinner updates
-		local current_text = "Starting implementation..."
+        -- Track current text for spinner updates
+        local current_text = "Starting implementation..."
 
-		-- Animate the spinner
-		local timer = ui.create_spinner(bufnr, extmark_id, function()
-			return current_text
-		end)
+        -- Animate the spinner
+        local timer = ui.create_spinner(bufnr, extmark_id, function()
+            return current_text
+        end)
 
-		-- Get the full buffer content to provide context
-		local full_buffer = vim.api.nvim_buf_get_lines(bufnr, 0, -1, false)
-		local full_buffer_content = table.concat(full_buffer, "\n")
+        -- Get the full buffer content to provide context
+        local full_buffer = vim.api.nvim_buf_get_lines(bufnr, 0, -1, false)
+        local full_buffer_content = table.concat(full_buffer, "\n")
 
-		-- Build the AI prompt
-		local prompt_text = prompts.build_code_modification_prompt({
-			user_prompt = user_prompt,
-			filepath = filepath,
-			bufnr = bufnr,
-			full_buffer_content = full_buffer_content,
-			code_section = content,
-		})
+        -- Build the AI prompt
+        local prompt_text = prompts.build_code_modification_prompt({
+            user_prompt = user_prompt,
+            filepath = filepath,
+            bufnr = bufnr,
+            full_buffer_content = full_buffer_content,
+            code_section = content,
+        })
 
-		-- Send prompt asynchronously with agent and model
-		local success, err = opencode.send_prompt_async(
-			port,
-			session.id,
-			cwd,
-			prompt_text,
-			M.config.opencode.provider,
-			M.config.opencode.model,
-			AGENT_NAME
-		)
+        -- Send prompt asynchronously with agent and model
+        local success, err = opencode.send_prompt_async(
+            port,
+            session.id,
+            cwd,
+            prompt_text,
+            M.config.opencode.provider,
+            M.config.opencode.model,
+            AGENT_NAME
+        )
 
-		if not success then
-			timer:stop()
-			timer:close()
-			ui.clear_virtual_text(bufnr, extmark_id)
-			local error_msg = format_error("Failed to send prompt", err)
-			log.error(error_msg)
-			vim.notify(error_msg, vim.log.levels.ERROR)
-			return
-		end
+        if not success then
+            timer:stop()
+            timer:close()
+            ui.clear_virtual_text(bufnr, extmark_id)
+            local error_msg = format_error("Failed to send prompt", err)
+            log.error(error_msg)
+            vim.notify(error_msg, vim.log.levels.ERROR)
+            return
+        end
 
-		current_text = "Analyzing function..."
+        current_text = "Analyzing function..."
 
-		-- Subscribe to OpenCode events to update UI and track completion
-		opencode.subscribe_to_events(port, session.id, function(event, session_id)
-			-- Update virtual text based on events
-			if event.payload.type == "message.part.updated" and event.payload.properties then
-				local part = event.payload.properties.part
-				if part and part.sessionID == session.id then
-					-- Update virtual text based on part type
-					if part.type == "tool" and part.tool then
-						current_text = string.format("Running %s", part.tool)
-					elseif part.type == "text" then
-						current_text = "Thinking..."
-					end
-				end
-			elseif event.payload.type == "session.idle" and event.payload.properties then
-				-- Session completed
-				local sessionID = event.payload.properties.sessionID
-				if sessionID == session.id then
-					timer:stop()
-					timer:close()
-					ui.clear_virtual_text(bufnr, extmark_id)
-					log.info("Session completed")
+        -- Subscribe to OpenCode events to update UI and track completion
+        opencode.subscribe_to_events(port, session.id, function(event)
+            -- Update virtual text based on events
+            if
+                event.payload.type == "message.part.updated"
+                and event.payload.properties
+            then
+                local part = event.payload.properties.part
+                if part and part.sessionID == session.id then
+                    -- Update virtual text based on part type
+                    if part.type == "tool" and part.tool then
+                        current_text = string.format("Running %s", part.tool)
+                    elseif part.type == "text" then
+                        current_text = "Thinking..."
+                    end
+                end
+            elseif
+                event.payload.type == "session.idle"
+                and event.payload.properties
+            then
+                -- Session completed
+                local sessionID = event.payload.properties.sessionID
+                if sessionID == session.id then
+                    timer:stop()
+                    timer:close()
+                    ui.clear_virtual_text(bufnr, extmark_id)
+                    log.info("Session completed")
 
-					-- Auto-delete idle sessions if configured
-					if M.config.opencode.auto_delete_idle_sessions then
-						local ok, err = opencode.delete_session(port, session.id)
-						if not ok then
-							log.warn("Failed to delete session: " .. (err or "unknown error"))
-						end
-					end
-				end
-			end
-		end)
-	end)
+                    -- Auto-delete idle sessions if configured
+                    if M.config.opencode.auto_delete_idle_sessions then
+                        local ok, delErr =
+                            opencode.delete_session(port, session.id)
+                        if not ok then
+                            log.warn(
+                                "Failed to delete session: "
+                                    .. (delErr or "unknown error")
+                            )
+                        end
+                    end
+                end
+            end
+        end)
+    end)
 end
 
 ---Main assist function
@@ -153,106 +170,118 @@ end
 ---@param line1? number Start line from command range (1-indexed)
 ---@param line2? number End line from command range (1-indexed)
 local function assist(custom_prompt, line1, line2)
-	log.info("Assist command invoked")
+    log.info("Assist command invoked")
 
-	local bufnr = vim.api.nvim_get_current_buf()
-	local filepath = vim.api.nvim_buf_get_name(bufnr)
+    local bufnr = vim.api.nvim_get_current_buf()
+    local filepath = vim.api.nvim_buf_get_name(bufnr)
 
-	local start_line, end_line
+    local start_line, end_line
 
-	-- If range was provided from command, use it
-	if line1 and line2 then
-		start_line = line1 - 1 -- Convert to 0-indexed
-		end_line = line2 - 1
-	else
-		-- No range, use entire buffer
-		start_line = 0
-		end_line = vim.api.nvim_buf_line_count(bufnr) - 1
-	end
+    -- If range was provided from command, use it
+    if line1 and line2 then
+        start_line = line1 - 1 -- Convert to 0-indexed
+        end_line = line2 - 1
+    else
+        -- No range, use entire buffer
+        start_line = 0
+        end_line = vim.api.nvim_buf_line_count(bufnr) - 1
+    end
 
-	-- Capture the content immediately to protect against buffer changes
-	local content_lines = vim.api.nvim_buf_get_lines(bufnr, start_line, end_line + 1, false)
-	local content = table.concat(content_lines, "\n")
+    -- Capture the content immediately to protect against buffer changes
+    local content_lines =
+        vim.api.nvim_buf_get_lines(bufnr, start_line, end_line + 1, false)
+    local content = table.concat(content_lines, "\n")
 
-	log.debug(
-		string.format("Working with lines %d-%d in buffer %d (%s)", start_line + 1, end_line + 1, bufnr, filepath)
-	)
-	log.debug(string.format("Captured content: %s", content:sub(1, LOG_CONTENT_LENGTH)))
+    log.debug(
+        string.format(
+            "Working with lines %d-%d in buffer %d (%s)",
+            start_line + 1,
+            end_line + 1,
+            bufnr,
+            filepath
+        )
+    )
+    log.debug(
+        string.format(
+            "Captured content: %s",
+            content:sub(1, LOG_CONTENT_LENGTH)
+        )
+    )
 
-	-- Highlight the region
-	local highlight_marks = ui.highlight_region(bufnr, start_line, end_line)
-	vim.cmd("redraw")
+    -- Highlight the region
+    local highlight_marks = ui.highlight_region(bufnr, start_line, end_line)
+    vim.cmd("redraw")
 
-	-- If no custom prompt provided, ask user
-	if not custom_prompt then
-		vim.ui.input({
-			prompt = "Prompt: ",
-			default = "",
-		}, function(input)
-			-- Clear highlights
-			ui.clear_region_highlights(bufnr, highlight_marks)
+    -- If no custom prompt provided, ask user
+    if not custom_prompt then
+        vim.ui.input({
+            prompt = "Prompt: ",
+            default = "",
+        }, function(input)
+            -- Clear highlights
+            ui.clear_region_highlights(bufnr, highlight_marks)
 
-			if not input or input == "" then
-				log.debug("User cancelled assist")
-				return
-			end
+            if not input or input == "" then
+                log.debug("User cancelled assist")
+                return
+            end
 
-			-- Continue with the prompt
-			run_assist(bufnr, filepath, start_line, end_line, content, input)
-		end)
-	else
-		-- Clear highlights and continue immediately
-		ui.clear_region_highlights(bufnr, highlight_marks)
-		run_assist(bufnr, filepath, start_line, end_line, content, custom_prompt)
-	end
+            -- Continue with the prompt
+            run_assist(bufnr, filepath, start_line, content, input)
+        end)
+    else
+        -- Clear highlights and continue immediately
+        ui.clear_region_highlights(bufnr, highlight_marks)
+        run_assist(bufnr, filepath, start_line, content, custom_prompt)
+    end
 end
 
 ---Setup nvim-assist plugin
 ---Initializes configuration, logging, commands, and autocommands
----@param opts? NvimAssistConfig User configuration (merged with defaults)
-function M.setup(opts)
-	opts = opts or {}
+---@param user_opts? NvimAssistConfig User configuration (merged with defaults)
+function M.setup(user_opts)
+    user_opts = user_opts or {}
 
-	vim.keymap.set("v", "<leader>t", ":Assist<CR>")
+    vim.keymap.set("v", "<leader>t", ":Assist<CR>")
 
-	-- Merge user config with defaults
-	M.config = vim.tbl_deep_extend("force", M.config, opts)
+    -- Merge user config with defaults
+    M.config = vim.tbl_deep_extend("force", M.config, user_opts)
 
-	-- Initialize logging
-	local temp_dir = os.getenv("TMPDIR") or "/tmp"
-	local base_dir = temp_dir .. "/nvim-assist"
-	vim.fn.mkdir(base_dir, "p")
-	local log_path = base_dir .. "/nvim-assist.log"
-	log.init(log_path)
+    -- Initialize logging
+    local temp_dir = os.getenv("TMPDIR") or "/tmp"
+    local base_dir = temp_dir .. "/nvim-assist"
+    vim.fn.mkdir(base_dir, "p")
+    local log_path = base_dir .. "/nvim-assist.log"
+    log.init(log_path)
 
-	-- Create single autocommand group for all nvim-assist autocmds
-	local augroup = vim.api.nvim_create_augroup("NvimAssist", { clear = true })
+    -- Create single autocommand group for all nvim-assist autocmds
+    local augroup = vim.api.nvim_create_augroup("NvimAssist", { clear = true })
 
-	-- Auto-stop OpenCode server and close log on Vim exit
-	vim.api.nvim_create_autocmd("VimLeavePre", {
-		group = augroup,
-		callback = function()
-			opencode.stop()
-			log.close()
-		end,
-	})
+    -- Auto-stop OpenCode server and close log on Vim exit
+    vim.api.nvim_create_autocmd("VimLeavePre", {
+        group = augroup,
+        callback = function()
+            opencode.stop()
+            log.close()
+        end,
+    })
 
-	-- Create :AssistLog command to tail log file
-	vim.api.nvim_create_user_command("AssistLog", function()
-		log.tail_log()
-	end, {})
+    -- Create :AssistLog command to tail log file
+    vim.api.nvim_create_user_command("AssistLog", function()
+        log.tail_log()
+    end, {})
 
-	-- Create :Assist command to work with visual selections or entire buffer
-	vim.api.nvim_create_user_command("Assist", function(opts)
-		local custom_prompt = opts.args ~= "" and opts.args or nil
-		local line1 = opts.range > 0 and opts.line1 or nil
-		local line2 = opts.range > 0 and opts.line2 or nil
-		assist(custom_prompt, line1, line2)
-	end, {
-		nargs = "?",
-		range = true,
-		desc = "Send selection or buffer to AI assistant",
-	})
+    -- Create :Assist command to work with visual selections or entire buffer
+    vim.api.nvim_create_user_command("Assist", function(opts)
+        local custom_prompt = opts.args ~= "" and opts.args or nil
+        local line1 = opts.range > 0 and opts.line1 or nil
+        local line2 = opts.range > 0 and opts.line2 or nil
+        assist(custom_prompt, line1, line2)
+    end, {
+        nargs = "?",
+        range = true,
+        desc = "Send selection or buffer to AI assistant",
+    })
 end
 
 return M

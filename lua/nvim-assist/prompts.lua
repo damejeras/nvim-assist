@@ -12,8 +12,8 @@ local M = {}
 ---@param params PromptParams Parameter table with user prompt and buffer context
 ---@return string # Formatted prompt text ready for AI
 function M.build_code_modification_prompt(params)
-	return string.format(
-		[[%s
+    return string.format(
+        [[%s
 
 Source buffer: %d (%s)
 
@@ -21,11 +21,11 @@ Code selected:
 ```
 %s
 ```]],
-		params.user_prompt,
-		params.bufnr,
-		params.filepath,
-		params.code_section
-	)
+        params.user_prompt,
+        params.bufnr,
+        params.filepath,
+        params.code_section
+    )
 end
 
 return M
