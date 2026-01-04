@@ -3,7 +3,6 @@ local M = {}
 ---@class OpenCodeConfig
 ---@field provider string AI provider (e.g., "openrouter")
 ---@field model string Model identifier (e.g., "moonshotai/kimi-k2")
----@field auto_delete_idle_sessions boolean Auto-delete sessions when idle
 
 ---@class NvimAssistConfig
 ---@field opencode OpenCodeConfig OpenCode server configuration
@@ -33,7 +32,6 @@ M.config = {
     opencode = {
         provider = "openrouter",
         model = "moonshotai/kimi-k2",
-        auto_delete_idle_sessions = false, -- Auto-delete sessions when they go idle
     },
 }
 
@@ -117,7 +115,7 @@ local function run_assist(bufnr, filepath, start_line, content, user_prompt)
             return
         end
 
-        current_text = "Analyzing function..."
+        current_text = "Analyzing selection..."
 
         -- Subscribe to OpenCode events to update UI and track completion
         opencode.subscribe_to_events(port, session.id, function(event)
@@ -146,18 +144,6 @@ local function run_assist(bufnr, filepath, start_line, content, user_prompt)
                     timer:close()
                     ui.clear_virtual_text(bufnr, extmark_id)
                     log.info("Session completed")
-
-                    -- Auto-delete idle sessions if configured
-                    if M.config.opencode.auto_delete_idle_sessions then
-                        local ok, delErr =
-                            opencode.delete_session(port, session.id)
-                        if not ok then
-                            log.warn(
-                                "Failed to delete session: "
-                                    .. (delErr or "unknown error")
-                            )
-                        end
-                    end
                 end
             end
         end)
