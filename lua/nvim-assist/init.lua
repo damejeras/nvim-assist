@@ -23,6 +23,43 @@ local function format_error(base_msg, err)
     return base_msg
 end
 
+---Base64 encode a string
+---@param data string String to encode
+---@return string # Base64 encoded string
+local function base64_encode(data)
+    local b64chars =
+        "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
+    local result = ""
+    local padding = ""
+
+    -- Process input in chunks of 3 bytes
+    for i = 1, #data, 3 do
+        local byte1 = string.byte(data, i)
+        local byte2 = string.byte(data, i + 1)
+        local byte3 = string.byte(data, i + 2)
+
+        local bits = byte1 * 65536
+        if byte2 then
+            bits = bits + byte2 * 256
+        end
+        if byte3 then
+            bits = bits + byte3
+        end
+
+        for j = 1, 4 do
+            if i + j - 2 > #data and j > 2 then
+                padding = padding .. "="
+            else
+                local index = math.floor(bits / 262144) % 64 + 1
+                result = result .. string.sub(b64chars, index, index)
+            end
+            bits = (bits * 64) % 16777216
+        end
+    end
+
+    return result .. padding
+end
+
 ---Constants
 local LOG_CONTENT_LENGTH = 100
 local AGENT_NAME = "nvim-assist"
@@ -66,11 +103,22 @@ local function run_assist(bufnr, filepath, start_line, content, user_prompt)
             return vim.notify(error_msg, vim.log.levels.ERROR)
         end
 
+        -- Build session URL for browser interface
+        -- Format: http://localhost:PORT/BASE64_CWD/session/SESSION_ID
+        local encoded_cwd = base64_encode(cwd)
+        local session_url = string.format(
+            "http://localhost:%d/%s/session/%s",
+            port,
+            encoded_cwd,
+            session.id
+        )
+
         -- Create tracked virtual line above the selection
         local extmark_id = ui.create_tracked_virtual_text(
             bufnr,
             start_line,
-            "Starting implementation..."
+            "Starting implementation...",
+            session_url
         )
 
         -- Track current text for spinner updates
@@ -79,7 +127,7 @@ local function run_assist(bufnr, filepath, start_line, content, user_prompt)
         -- Animate the spinner
         local timer = ui.create_spinner(bufnr, extmark_id, function()
             return current_text
-        end)
+        end, session_url)
 
         -- Get the full buffer content to provide context
         local full_buffer = vim.api.nvim_buf_get_lines(bufnr, 0, -1, false)
@@ -142,7 +190,14 @@ local function run_assist(bufnr, filepath, start_line, content, user_prompt)
                 if sessionID == session.id then
                     timer:stop()
                     timer:close()
-                    ui.clear_virtual_text(bufnr, extmark_id)
+                    -- Update virtual text to show robot emoji with URL
+                    ui.update_virtual_text(
+                        bufnr,
+                        extmark_id,
+                        "🤖 " .. session_url,
+                        nil,
+                        nil -- Don't show URL on separate line anymore
+                    )
                     log.info("Session completed")
                 end
             end
