@@ -62,7 +62,7 @@ end
 
 ---Constants
 local LOG_CONTENT_LENGTH = 100
-local AGENT_NAME = "nvim-assist"
+local AGENT_NAME = "coder"
 
 ---@type NvimAssistConfig # Default configuration
 M.config = {
@@ -205,6 +205,52 @@ local function run_assist(bufnr, filepath, start_line, content, user_prompt)
     end)
 end
 
+---Navigate function using navigator agent
+---Opens a clean session in browser for code exploration and explanation
+local function navigate()
+    log.info("Navigate command invoked")
+
+    -- Ensure OpenCode server is running
+    opencode.start(function(port)
+        if not port then
+            log.error("Failed to get OpenCode server port")
+            return vim.notify(
+                "Failed to get OpenCode server port",
+                vim.log.levels.ERROR
+            )
+        end
+
+        log.info("OpenCode server running on port " .. port)
+
+        local cwd = vim.fn.getcwd()
+
+        -- Create OpenCode session
+        local session, err = opencode.create_session(port, cwd)
+        if not session then
+            local error_msg =
+                format_error("Failed to create OpenCode session", err)
+            log.error(error_msg)
+            return vim.notify(error_msg, vim.log.levels.ERROR)
+        end
+
+        -- Build session URL for browser interface with agent and model parameters
+        local encoded_cwd = base64_encode(cwd)
+        local session_url = string.format(
+            "http://localhost:%d/%s/session/%s?agent=navigator&provider=%s&model=%s",
+            port,
+            encoded_cwd,
+            session.id,
+            M.config.opencode.provider,
+            M.config.opencode.model
+        )
+
+        -- Open browser with session URL
+        vim.ui.open(session_url)
+
+        log.info("Navigator session opened in browser: " .. session_url)
+    end)
+end
+
 ---Main assist function
 ---Handles visual selection or entire buffer with user prompt
 ---@param custom_prompt? string Optional prompt (will prompt user if nil)
@@ -322,6 +368,13 @@ function M.setup(user_opts)
         nargs = "?",
         range = true,
         desc = "Send selection or buffer to AI assistant",
+    })
+
+    -- Create :AssistNavigate command to open clean navigator session in browser
+    vim.api.nvim_create_user_command("AssistNavigate", function()
+        navigate()
+    end, {
+        desc = "Open navigator agent session in browser",
     })
 end
 

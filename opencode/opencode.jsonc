@@ -8,10 +8,15 @@
 		"write": false // disable direct writing
 	},
 	"agent": {
-		"nvim-assist": {
+		"coder": {
 			"description": "Modifies code in open buffers using editor tools",
 			"mode": "primary",
-			"prompt": "{file:./prompts/system.txt}"
+			"prompt": "{file:./prompts/coder.txt}"
+		},
+		"navigator": {
+			"description": "Explores and explains codebase without making modifications",
+			"mode": "primary",
+			"prompt": "{file:./prompts/navigator.txt}"
 		}
 	}
 }
