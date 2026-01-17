@@ -68,7 +68,7 @@ local AGENT_NAME = "coder"
 M.config = {
     opencode = {
         provider = "opencode",
-        model = "big_pickle",
+        model = "big-pickle",
     },
 }
 
@@ -117,12 +117,13 @@ local function run_assist(bufnr, filepath, start_line, content, user_prompt)
         local extmark_id = ui.create_tracked_virtual_text(
             bufnr,
             start_line,
-            "Starting implementation...",
-            session_url
+            "Working...",
+            session_url,
+            session.id
         )
 
         -- Track current text for spinner updates
-        local current_text = "Starting implementation..."
+        local current_text = "Working..."
 
         -- Animate the spinner
         local timer = ui.create_spinner(bufnr, extmark_id, function()
@@ -190,6 +191,8 @@ local function run_assist(bufnr, filepath, start_line, content, user_prompt)
                 if sessionID == session.id then
                     timer:stop()
                     timer:close()
+                    -- Mark session as completed before updating virtual text
+                    ui.mark_session_completed(extmark_id)
                     -- Update virtual text to show robot emoji with URL
                     ui.update_virtual_text(
                         bufnr,
@@ -341,6 +344,60 @@ function M.setup(user_opts)
         callback = function()
             opencode.stop()
             log.close()
+        end,
+    })
+
+    -- Clear completed session extmarks when buffer is saved
+    vim.api.nvim_create_autocmd("BufWritePost", {
+        group = augroup,
+        callback = function(args)
+            local bufnr = args.buf
+            local cleared = ui.clear_completed_sessions(bufnr)
+            if cleared > 0 then
+                log.debug(
+                    string.format(
+                        "Cleared %d completed session extmarks on save",
+                        cleared
+                    )
+                )
+            end
+        end,
+    })
+
+    -- Abort in-progress sessions and clear all extmarks when buffer is closed
+    vim.api.nvim_create_autocmd("BufUnload", {
+        group = augroup,
+        callback = function(args)
+            local bufnr = args.buf
+            local cleared_sessions = ui.clear_all_sessions(bufnr)
+
+            -- Abort any in-progress sessions
+            local port = opencode.get_port()
+            if port then
+                local cwd = vim.fn.getcwd()
+                for _, session_info in ipairs(cleared_sessions) do
+                    if not session_info.completed then
+                        log.info(
+                            "Aborting in-progress session on buffer close: "
+                                .. session_info.session_id
+                        )
+                        opencode.abort_session(
+                            port,
+                            session_info.session_id,
+                            cwd
+                        )
+                    end
+                end
+            end
+
+            if #cleared_sessions > 0 then
+                log.debug(
+                    string.format(
+                        "Cleared %d session extmarks on buffer close",
+                        #cleared_sessions
+                    )
+                )
+            end
         end,
     })
 

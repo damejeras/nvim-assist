@@ -110,7 +110,7 @@ function M.get_path()
 end
 
 ---Open log file in a split with auto-reload
----Creates a split window that auto-refreshes and jumps to end on updates
+---Creates a split window that auto-refreshes when the file changes
 function M.tail_log()
     if not log_path then
         vim.notify("Log file not initialized", vim.log.levels.WARN)
@@ -124,20 +124,8 @@ function M.tail_log()
     -- Enable autoread for this buffer
     vim.bo[bufnr].autoread = true
 
-    -- Jump to end of file
+    -- Jump to end of file initially
     vim.cmd("normal! G")
-
-    -- Set up autocommand to check for changes and jump to end
-    local augroup =
-        vim.api.nvim_create_augroup("NvimAssistLogTail", { clear = false })
-    vim.api.nvim_create_autocmd({ "CursorHold", "FocusGained" }, {
-        group = augroup,
-        buffer = bufnr,
-        callback = function()
-            vim.cmd("checktime")
-            vim.cmd("normal! G")
-        end,
-    })
 end
 
 return M

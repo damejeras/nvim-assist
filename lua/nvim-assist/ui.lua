@@ -6,6 +6,8 @@ local M = {}
 ---@class TrackedExtmark
 ---@field bufnr number Buffer number
 ---@field target_line number Target line number for repositioning
+---@field session_id string|nil OpenCode session ID
+---@field completed boolean Whether the session has completed (idle)
 
 ---@type number # Namespace ID for virtual text
 local ns_id = vim.api.nvim_create_namespace("nvim-assist")
@@ -91,8 +93,9 @@ end
 ---@param line number Line number (0-indexed) to place virtual text above
 ---@param text string Initial text to display
 ---@param session_url? string Optional session URL to display on second line
+---@param session_id? string Optional OpenCode session ID for tracking
 ---@return ExtmarkId # Extmark identifier for updates/clearing
-function M.create_tracked_virtual_text(bufnr, line, text, session_url)
+function M.create_tracked_virtual_text(bufnr, line, text, session_url, session_id)
     local indent = get_line_indent(bufnr, line)
     local virt_lines = {}
 
@@ -112,8 +115,13 @@ function M.create_tracked_virtual_text(bufnr, line, text, session_url)
         virt_lines_above = true,
     })
 
-    -- Track this extmark with its target line
-    tracked_extmarks[extmark_id] = { bufnr = bufnr, target_line = line }
+    -- Track this extmark with its target line and session info
+    tracked_extmarks[extmark_id] = {
+        bufnr = bufnr,
+        target_line = line,
+        session_id = session_id,
+        completed = false,
+    }
 
     return extmark_id
 end
@@ -312,6 +320,64 @@ function M.create_spinner(bufnr, extmark_id, current_text_callback, session_url)
     )
 
     return timer
+end
+
+---Mark an extmark's session as completed
+---@param extmark_id ExtmarkId Extmark identifier
+function M.mark_session_completed(extmark_id)
+    local tracked = tracked_extmarks[extmark_id]
+    if tracked then
+        tracked.completed = true
+    end
+end
+
+---Get all in-progress (not completed) sessions for a buffer
+---@param bufnr number Buffer number
+---@return table[] # Array of {extmark_id, session_id} for in-progress sessions
+function M.get_in_progress_sessions(bufnr)
+    local sessions = {}
+    for extmark_id, tracked in pairs(tracked_extmarks) do
+        if tracked.bufnr == bufnr and not tracked.completed and tracked.session_id then
+            table.insert(sessions, {
+                extmark_id = extmark_id,
+                session_id = tracked.session_id,
+            })
+        end
+    end
+    return sessions
+end
+
+---Clear all completed session extmarks for a buffer
+---@param bufnr number Buffer number
+---@return number # Number of extmarks cleared
+function M.clear_completed_sessions(bufnr)
+    local cleared = 0
+    for extmark_id, tracked in pairs(tracked_extmarks) do
+        if tracked.bufnr == bufnr and tracked.completed then
+            safe_del_extmark(bufnr, extmark_id)
+            tracked_extmarks[extmark_id] = nil
+            cleared = cleared + 1
+        end
+    end
+    return cleared
+end
+
+---Clear all session extmarks for a buffer (regardless of completion status)
+---@param bufnr number Buffer number
+---@return table[] # Array of {session_id, completed} for sessions that were cleared
+function M.clear_all_sessions(bufnr)
+    local cleared_sessions = {}
+    for extmark_id, tracked in pairs(tracked_extmarks) do
+        if tracked.bufnr == bufnr and tracked.session_id then
+            table.insert(cleared_sessions, {
+                session_id = tracked.session_id,
+                completed = tracked.completed,
+            })
+            safe_del_extmark(bufnr, extmark_id)
+            tracked_extmarks[extmark_id] = nil
+        end
+    end
+    return cleared_sessions
 end
 
 return M

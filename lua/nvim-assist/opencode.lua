@@ -441,6 +441,35 @@ function M.send_prompt_async(
     end
 end
 
+---Abort an active session
+---@param port Port Server port number
+---@param session_id string Session identifier to abort
+---@param cwd string Working directory
+---@return boolean|nil success True on success
+---@return string|nil error Error message on failure
+function M.abort_session(port, session_id, cwd)
+    log.debug("Aborting OpenCode session " .. session_id)
+
+    local response, err = request(
+        port,
+        "POST",
+        string.format(
+            "/session/%s/abort?directory=%s",
+            session_id,
+            url_encode(cwd)
+        ),
+        vim.empty_dict(),
+        true -- Allow empty response
+    )
+
+    if response then
+        log.info("Session aborted: " .. session_id)
+        return true
+    else
+        return nil, format_error("Failed to abort session", err)
+    end
+end
+
 ---Subscribe to OpenCode event stream for a session
 ---Calls on_event callback for each received event using Server-Sent Events (SSE)
 ---@param port Port Server port number
