@@ -67,8 +67,8 @@ local AGENT_NAME = "coder"
 ---@type NvimAssistConfig # Default configuration
 M.config = {
     opencode = {
-        provider = "openrouter",
-        model = "moonshotai/kimi-k2",
+        provider = "opencode",
+        model = "big_pickle",
     },
 }
 
@@ -224,22 +224,13 @@ local function navigate()
 
         local cwd = vim.fn.getcwd()
 
-        -- Create OpenCode session
-        local session, err = opencode.create_session(port, cwd)
-        if not session then
-            local error_msg =
-                format_error("Failed to create OpenCode session", err)
-            log.error(error_msg)
-            return vim.notify(error_msg, vim.log.levels.ERROR)
-        end
-
         -- Build session URL for browser interface with agent and model parameters
+        -- Session will be created automatically when accessing this endpoint
         local encoded_cwd = base64_encode(cwd)
         local session_url = string.format(
-            "http://localhost:%d/%s/session/%s?agent=navigator&provider=%s&model=%s",
+            "http://localhost:%d/%s/session?agent=navigator&model=%s/%s",
             port,
             encoded_cwd,
-            session.id,
             M.config.opencode.provider,
             M.config.opencode.model
         )
